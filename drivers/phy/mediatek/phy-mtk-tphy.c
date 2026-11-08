@@ -117,6 +117,35 @@
 #define P2C_RG_AVALID			BIT(2)
 #define P2C_RG_IDDIG			BIT(1)
 
+/*
+ * Xiaomi MT6893 (chopin) needs two extra steps in the U2 PHY power-on that
+ * mainline does not do, because this board does not wire the PHY's VBUS pad to
+ * the Type-C VBUS (the charger IC senses VBUS instead) and does not model the
+ * PHY's analog rail as a regulator.  The vendor's mu3phy driver does both
+ * unconditionally in phy_init_soc(), so this mirrors it rather than inventing a
+ * sequence:
+ *
+ *   - RG_SSUSB_VUSB09_ON powers the U2 PHY's 0.9V analog rail.  Without it the
+ *     analog front end is dead: there is no D+ pull-up for the host to see and
+ *     no VBUS comparator, so the controller never reports a session at all -
+ *     the UDC stays "not attached" and mtu3 receives no interrupts.
+ *   - FORCE_VBUSVALID/AVALID/SESSEND push the session signals into the OTG
+ *     state machine directly.  Mainline only writes the RG_ values next to
+ *     these and relies on the hardware comparator, which this board does not
+ *     have connected.
+ *
+ * Gated on a DT property so no other tphy user changes behaviour.  Register and
+ * bit names are from the vendor's mtk-phy-asic.h, where U3D_USB30_PHYA_REG1 is
+ * u3_sif2_base + 0xb00 + 0x04.
+ */
+#define P2C_FORCE_SESSEND		BIT(12)
+#define P2C_FORCE_VBUSVALID		BIT(13)
+#define P2C_FORCE_AVALID		BIT(10)
+#define U3D_USB30_PHYA_REG1		0x0b04
+#define RG_SSUSB_VUSB09_ON		BIT(29)
+#define U2P_FORCE_SESSION_VALID		(P2C_FORCE_VBUSVALID | P2C_FORCE_AVALID | \
+					 P2C_FORCE_SESSEND)
+
 #define U3P_U2PHYBC12C		0x080
 #define P2C_RG_CHGDT_EN		BIT(0)
 
@@ -878,6 +907,18 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
 
 	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND);
 
+	/*
+	 * Boards whose PHY VBUS pad is not connected (see the comment next to
+	 * U2P_FORCE_SESSION_VALID) also need the analog rail on and the
+	 * session signals forced, exactly as the vendor driver does.
+	 */
+	if (of_property_read_bool(instance->phy->dev.of_node,
+				  "mediatek,force-session-valid")) {
+		mtk_phy_set_bits(instance->port_base + U3D_USB30_PHYA_REG1,
+				 RG_SSUSB_VUSB09_ON);
+		mtk_phy_set_bits(com + U3P_U2PHYDTM1, U2P_FORCE_SESSION_VALID);
+	}
+
 	if (tphy->pdata->avoid_rx_sen_degradation && index) {
 		mtk_phy_set_bits(com + U3D_U2PHYDCR0, P2C_RG_SIF_U2PLL_FORCE_ON);
 
@@ -895,6 +936,10 @@ static void u2_phy_instance_power_off(struct mtk_tphy *tphy,
 
 	/* OTG Disable */
 	mtk_phy_clear_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
+
+	if (of_property_read_bool(instance->phy->dev.of_node,
+				  "mediatek,force-session-valid"))
+		mtk_phy_clear_bits(com + U3P_U2PHYDTM1, U2P_FORCE_SESSION_VALID);
 
 	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_VBUSVALID | P2C_RG_AVALID);
 

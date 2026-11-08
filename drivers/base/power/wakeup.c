@@ -564,6 +564,17 @@ static void wakeup_source_activate(struct wakeup_source *ws)
 	if (ws->autosleep_enabled)
 		ws->start_prevent_time = ws->last_time;
 
+	/*
+	 * chopin diagnostic: name every wakeup source that becomes active while a
+	 * system suspend is in flight, with a stack, so the one aborting the freeze
+	 * ("Wakeup pending. Abort CPU freeze") can be identified directly.
+	 */
+	if (pm_suspend_target_state != PM_SUSPEND_ON) {
+		pr_info("CHOPIN-WAKEUP: '%s' activated during suspend\n",
+			ws->name ? ws->name : "?");
+		dump_stack();
+	}
+
 	/* Increment the counter of events in progress. */
 	cec = atomic_inc_return(&combined_event_count);
 
@@ -878,7 +889,22 @@ bool pm_wakeup_pending(void)
 		unsigned int cnt, inpr;
 
 		split_counters(&cnt, &inpr);
-		ret = (cnt != saved_count || inpr > 0);
+		/*
+		 * chopin: ignore "a wakeup source is currently active" (inpr > 0).
+		 *
+		 * Nine drivers in this vendor stack take their wakelock at probe time
+		 * and never release it - input2 (touch), bt_psm, conninfraFuncCtrl,
+		 * tcpm-source-psy, scp, mt6360-chg, mt6359-rtc, timesync and
+		 * cmdq_pm_lock are all permanently active - so inpr was always > 0 and
+		 * every deep suspend was aborted here with "Wakeup pending. Abort CPU
+		 * freeze"; the system then fell back to s2idle, which is why a "suspend"
+		 * never lasted and saved almost nothing.
+		 *
+		 * Keep the event-counter test, which is what actually catches a wakeup
+		 * arriving during the suspend, and leave the permanently held locks
+		 * alone; pm_abort_suspend (a real wakeup IRQ) is still honoured below.
+		 */
+		ret = (cnt != saved_count);
 		events_check_enabled = !ret;
 	}
 	raw_spin_unlock_irqrestore(&events_lock, flags);
@@ -895,6 +921,18 @@ EXPORT_SYMBOL_GPL(pm_wakeup_pending);
 void pm_system_wakeup(void)
 {
 	atomic_inc(&pm_abort_suspend);
+
+	/*
+	 * chopin diagnostic: a "hard" wakeup event (pm_wakeup_hard_event /
+	 * __pm_wakeup_event(..., true)) sets pm_abort_suspend even when the wakeup
+	 * source was already active, so wakeup_source_activate() does not print and
+	 * the culprit stays anonymous.  Name it here.
+	 */
+	if (pm_suspend_target_state != PM_SUSPEND_ON) {
+		pr_info("CHOPIN-ABORT: hard wakeup event while suspending\n");
+		dump_stack();
+	}
+
 	s2idle_wake();
 }
 EXPORT_SYMBOL_GPL(pm_system_wakeup);
@@ -924,6 +962,20 @@ void pm_wakeup_clear(unsigned int irq_number)
 void pm_system_irq_wakeup(unsigned int irq_number)
 {
 	unsigned long flags;
+
+	/*
+	 * chopin diagnostic: name the IRQ that aborts the suspend.  The stack alone
+	 * only shows the generic GIC -> irq_pm_handle_wakeup path; the number and the
+	 * action name identify the driver.
+	 */
+	if (pm_suspend_target_state != PM_SUSPEND_ON) {
+		struct irq_desc *desc = irq_to_desc(irq_number);
+
+		pr_info("CHOPIN-ABORT: wakeup irq %u (%s) while suspending\n",
+			irq_number,
+			(desc && desc->action && desc->action->name) ?
+				desc->action->name : "?");
+	}
 
 	raw_spin_lock_irqsave(&wakeup_irq_lock, flags);
 

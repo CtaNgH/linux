@@ -733,7 +733,7 @@ static struct platform_driver mtk_smi_larb_driver = {
 	.probe	= mtk_smi_larb_probe,
 	.remove = mtk_smi_larb_remove,
 	.driver	= {
-		.name = "mtk-smi-larb",
+		.name = "mtk-smi-larb-legacy",
 		.of_match_table = mtk_smi_larb_of_ids,
 		.pm             = &smi_larb_pm_ops,
 	}
@@ -964,7 +964,7 @@ static struct platform_driver mtk_smi_common_driver = {
 	.probe	= mtk_smi_common_probe,
 	.remove = mtk_smi_common_remove,
 	.driver	= {
-		.name = "mtk-smi-common",
+		.name = "mtk-smi-common-legacy",
 		.of_match_table = mtk_smi_common_of_ids,
 		.pm             = &smi_common_pm_ops,
 	}
@@ -977,6 +977,16 @@ static struct platform_driver * const smidrivers[] = {
 
 static int __init mtk_smi_init(void)
 {
+	/*
+	 * The downstream SMI driver (drivers/memory/mtk-smi-downstream.c, built
+	 * with the v2 display stack) owns this driver name space: registering
+	 * ours as well fails with -EBUSY, which in turn made every v2 display
+	 * component report "need larb device".  Let the downstream driver own it
+	 * while the v2 stack is enabled (it also provides the iommu helpers).
+	 */
+	if (IS_ENABLED(CONFIG_DRM_MEDIATEK_V2))
+		return 0;
+
 	return platform_register_drivers(smidrivers, ARRAY_SIZE(smidrivers));
 }
 module_init(mtk_smi_init);
