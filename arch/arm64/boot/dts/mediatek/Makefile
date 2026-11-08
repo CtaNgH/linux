@@ -1,6 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt2712-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6755-evb.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6893-xiaomi-chopin.dtb
+
+# Compile this board's DTB with symbols (-@), i.e. keep the __symbols__ node.
+#
+# LK applies the contents of the dtbo partition on top of the base tree from
+# boot.img before handing it to the kernel, and its overlay fixup walks
+# __symbols__ by name.  Without that node LK logs
+#
+#   ERROR: ufdt_overlay_do_fixups():No node __symbols__ in main dtb.
+#   ufdt_apply_overlay() failed!
+#   boot image dtb_overlay fail
+#
+# and then never jumps to the kernel at all.
+DTC_FLAGS_mt6893-xiaomi-chopin += -@
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6779-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
