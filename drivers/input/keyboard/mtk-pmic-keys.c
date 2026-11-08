@@ -268,11 +268,23 @@ static int mtk_pmic_keys_suspend(struct device *dev)
 	int index;
 
 	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++) {
-		if (keys->keys[index].wakeup) {
-			enable_irq_wake(keys->keys[index].irq);
-			if (keys->keys[index].irq_r > 0)
-				enable_irq_wake(keys->keys[index].irq_r);
-		}
+		if (!keys->keys[index].wakeup)
+			continue;
+
+		enable_irq_wake(keys->keys[index].irq);
+
+		/*
+		 * chopin: do NOT arm the release IRQ.
+		 *
+		 * Pressing the power button starts a suspend, and the release
+		 * arrives a moment later - still inside the suspend window (the
+		 * device takes about a second to freeze, a key press lasts a few
+		 * hundred milliseconds).  With the release IRQ armed as a wakeup
+		 * source that release woke the system straight back up, so the
+		 * power button could never leave the device asleep while an idle
+		 * triggered suspend worked fine.  The press IRQ alone is enough to
+		 * wake the device on the next press.
+		 */
 	}
 
 	return 0;
@@ -286,8 +298,12 @@ static int mtk_pmic_keys_resume(struct device *dev)
 	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++) {
 		if (keys->keys[index].wakeup) {
 			disable_irq_wake(keys->keys[index].irq);
-			if (keys->keys[index].irq_r > 0)
-				disable_irq_wake(keys->keys[index].irq_r);
+			/*
+			 * The release IRQ is deliberately not armed in suspend any more,
+			 * so do not try to disarm it here: that imbalance produced a
+			 * "Unbalanced IRQ ... wake disable" warning from
+			 * mtk_pmic_keys_resume() on every resume.
+			 */
 		}
 	}
 

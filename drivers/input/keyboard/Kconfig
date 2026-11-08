@@ -749,6 +749,15 @@ config KEYBOARD_MT6779
 	  To compile this driver as a module, choose M here: the
 	  module will be called mt6779-keypad.
 
+config KEYBOARD_MTK_KPD
+	tristate "MediaTek MT6893 keypad (volume keys)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Say Y here to enable the MediaTek MT6893 keypad controller at
+	  0x10010000.  It reports the volume keys, which the PMIC key device
+	  does not cover.  The key map comes from the board DT
+	  (mediatek,kpd-hw-init-map).
+
 config KEYBOARD_MTK_PMIC
 	tristate "MediaTek PMIC keys support"
 	depends on MFD_MT6397 || COMPILE_TEST
