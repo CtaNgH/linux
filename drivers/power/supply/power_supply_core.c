@@ -10,6 +10,7 @@
  */
 
 #include <linux/cleanup.h>
+#include <linux/suspend.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -155,7 +156,15 @@ void power_supply_changed(struct power_supply *psy)
 
 	spin_lock_irqsave(&psy->changed_lock, flags);
 	psy->changed = true;
-	pm_stay_awake(&psy->dev);
+	/*
+	 * chopin: the charger's state changes while the system is suspending (the
+	 * PD contract teardown on the way into suspend, for one) and the activation
+	 * aborts the freeze: "CHOPIN-WAKEUP: 'mt6360-chg.2.auto' activated during
+	 * suspend".  Skip the wakeup bookkeeping for that window - the notifier chain
+	 * and the uevent still run.
+	 */
+	if (pm_suspend_target_state == PM_SUSPEND_ON)
+		pm_stay_awake(&psy->dev);
 	spin_unlock_irqrestore(&psy->changed_lock, flags);
 	schedule_work(&psy->changed_work);
 }

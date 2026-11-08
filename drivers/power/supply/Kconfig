@@ -1202,4 +1202,13 @@ config MACSMC_POWER
 
 	  Say Y or M here if you have an Apple Silicon based Mac.
 
+config CHOPIN_ADC_BATTERY
+	tristate "chopin: battery capacity from the charger VBAT ADC"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on IIO
+	help
+	  The BQ27Z561 fuel gauge on this board does not work with mainline's
+	  bq27xxx driver, so derive the battery percentage from the MT6360
+	  charger's vbat IIO channel instead.
+
 endif # POWER_SUPPLY
