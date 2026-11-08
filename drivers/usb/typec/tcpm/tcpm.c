@@ -1312,12 +1312,29 @@ static int tcpm_set_attached_state(struct tcpm_port *port, bool attached)
 				     port->data_role);
 }
 
+/*
+ * chopin: tcpm_register_port() resolves the role switch exactly once, but on
+ * this board the typec controller (an MT6360 MFD child) probes before the USB
+ * controller has registered its switch, so port->role_sw stayed NULL and TCPM
+ * could never request the host data role - which is what left OTG devices
+ * without VBUS.  Retry the lookup the first time a role is actually needed.
+ */
+static void tcpm_role_sw_lookup(struct tcpm_port *port)
+{
+	if (port->role_sw)
+		return;
+
+	port->role_sw = usb_role_switch_get(port->dev);
+}
+
 static int tcpm_set_roles(struct tcpm_port *port, bool attached, int state,
 			  enum typec_role role, enum typec_data_role data)
 {
 	enum typec_orientation orientation;
 	enum usb_role usb_role;
 	int ret;
+
+	tcpm_role_sw_lookup(port);
 
 	if (port->polarity == TYPEC_POLARITY_CC1)
 		orientation = TYPEC_ORIENTATION_NORMAL;

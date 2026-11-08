@@ -262,6 +262,12 @@ struct ssusb_mtk {
 	struct otg_switch_mtk otg_switch;
 	enum usb_dr_mode dr_mode;
 	bool is_host;
+	/*
+	 * chopin: set when the USB IP refused to enter sleep during a system
+	 * suspend.  The PHY and clocks are deliberately left enabled then, so
+	 * resume must not try to enable them again.
+	 */
+	bool ip_awake_during_suspend;
 	int u2_ports;
 	int u3_ports;
 	int u2p_dis_msk;
@@ -361,6 +367,9 @@ struct mtu3 {
 	unsigned is_self_powered:1;
 	unsigned test_mode:1;
 	unsigned softconnect:1;
+	/* chopin: softconnect to restore after a system resume, because the
+	 * suspend path clears softconnect when it soft-disconnects. */
+	bool softconnect_resume;
 	unsigned u1_enable:1;
 	unsigned u2_enable:1;
 	unsigned u3_capable:1;
