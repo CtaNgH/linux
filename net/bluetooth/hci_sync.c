@@ -5027,11 +5027,21 @@ static int hci_get_mws_transport_config_sync(struct hci_dev *hdev)
 /* Check for Synchronization Train support */
 static int hci_read_sync_train_params_sync(struct hci_dev *hdev)
 {
+	int ret;
+
 	if (!lmp_sync_train_capable(hdev))
 		return 0;
 
-	return __hci_cmd_sync_status(hdev, HCI_OP_READ_SYNC_TRAIN_PARAMS,
-				     0, NULL, HCI_CMD_TIMEOUT);
+	ret = __hci_cmd_sync_status(hdev, HCI_OP_READ_SYNC_TRAIN_PARAMS,
+				    0, NULL, HCI_CMD_TIMEOUT);
+	/* The MTK connac firmware advertises LMP sync train support but
+	 * answers this optional read with "Unknown HCI Command".  That must
+	 * not abort the whole init sequence.
+	 */
+	if (ret == -EBADRQC)
+		return 0;
+
+	return ret;
 }
 
 /* Enable Secure Connections if supported and configured */
