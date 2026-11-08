@@ -630,9 +630,22 @@ int mt8192_init_clock(struct mtk_base_afe *afe)
 	for (i = 0; i < CLK_NUM; i++) {
 		afe_priv->clk[i] = devm_clk_get(afe->dev, aud_clks[i]);
 		if (IS_ERR(afe_priv->clk[i])) {
+			long err = PTR_ERR(afe_priv->clk[i]);
+
+			/*
+			 * A missing clock silently becomes NULL and every
+			 * clk_prepare_enable(NULL) then succeeds, so the AFE
+			 * runs without any of its clocks.  If the provider is
+			 * just not ready yet, defer instead.
+			 */
+			if (err == -EPROBE_DEFER) {
+				dev_dbg(afe->dev, "%s %s not ready, deferring\n",
+					__func__, aud_clks[i]);
+				return -EPROBE_DEFER;
+			}
 			dev_warn(afe->dev, "%s devm_clk_get %s fail, ret %ld\n",
 				 __func__,
-				 aud_clks[i], PTR_ERR(afe_priv->clk[i]));
+				 aud_clks[i], err);
 			afe_priv->clk[i] = NULL;
 		}
 	}

@@ -2096,6 +2096,15 @@ static int mt8192_afe_runtime_resume(struct device *dev)
 	struct mt8192_afe_private *afe_priv = afe->platform_priv;
 	int ret;
 
+	/*
+	 * The audsys clock gates live in the same regmap as the AFE
+	 * registers.  While it is cache-only the gate writes made by the
+	 * clock framework go to the cache and the hardware clock never
+	 * comes up, so leave cache-only mode before touching clocks.
+	 */
+	if (afe->regmap && !afe_priv->pm_runtime_bypass_reg_ctl)
+		regcache_cache_only(afe->regmap, false);
+
 	ret = mt8192_afe_enable_clock(afe);
 	if (ret)
 		return ret;
@@ -2103,7 +2112,6 @@ static int mt8192_afe_runtime_resume(struct device *dev)
 	if (!afe->regmap || afe_priv->pm_runtime_bypass_reg_ctl)
 		goto skip_regmap;
 
-	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
 	/* enable audio sys DCM for power saving */
@@ -2202,14 +2210,24 @@ static int mt8192_afe_pcm_dev_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	/* reset controller to reset audio regs before regmap cache */
-	rstc = devm_reset_control_get_exclusive(dev, "audiosys");
+	/*
+	 * Reset the audio registers before the regmap cache is built.
+	 *
+	 * The reset is optional.  MT6893 (chopin) has no usable audiosys reset
+	 * in its boot chain: the vendor kernel never resets the block either,
+	 * because LK has already left the AFE in its power-on state.  TOPRGU's
+	 * audio bit is also not trustworthy on this SoC (asserting it has taken
+	 * the display down with it), so let the device tree decide.
+	 */
+	rstc = devm_reset_control_get_optional_exclusive(dev, "audiosys");
 	if (IS_ERR(rstc))
 		return dev_err_probe(dev, PTR_ERR(rstc), "could not get audiosys reset\n");
 
-	ret = reset_control_reset(rstc);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to trigger audio reset\n");
+	if (rstc) {
+		ret = reset_control_reset(rstc);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to trigger audio reset\n");
+	}
 
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
@@ -2328,6 +2346,7 @@ static void mt8192_afe_pcm_dev_remove(struct platform_device *pdev)
 
 static const struct of_device_id mt8192_afe_pcm_dt_match[] = {
 	{ .compatible = "mediatek,mt8192-audio", },
+	{ .compatible = "mediatek,mt6893-audio", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mt8192_afe_pcm_dt_match);

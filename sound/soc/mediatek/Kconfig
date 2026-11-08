@@ -297,6 +297,19 @@ config SND_SOC_MT8192
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config SND_SOC_MT6893_MT6359
+	tristate "ASoC Audio driver for MT6893 with MT6359 and CS35L41"
+	depends on I2C && GPIOLIB
+	depends on SND_SOC_MT8192 && MTK_PMIC_WRAP
+	select SND_SOC_MT6359
+	select SND_SOC_CS35L41_I2C
+	help
+	  This adds the ASoC machine driver for MediaTek MT6893 boards whose
+	  speakers are driven by a pair of Cirrus CS35L41 amplifiers hanging
+	  off AFE I2S3 (Xiaomi Redmi Note 10 Pro "chopin").
+	  Select Y if you have such device.
+	  If unsure select "N".
+
 config SND_SOC_MT8192_MT6359_RT1015_RT5682
 	tristate "ASoC Audio driver for MT8192 with MT6359 RT1015 RT5682 codec"
 	depends on I2C && GPIOLIB

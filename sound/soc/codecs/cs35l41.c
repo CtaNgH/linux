@@ -1315,12 +1315,19 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 		regmap_update_bits(cs35l41->regmap, CS35L41_IRQ1_MASK3, CS35L41_INT3_PLL_LOCK_MASK,
 				   0 << CS35L41_INT3_PLL_LOCK_SHIFT);
 
-	ret = devm_request_threaded_irq(cs35l41->dev, cs35l41->irq, NULL, cs35l41_irq,
-					IRQF_ONESHOT | IRQF_SHARED | irq_pol,
-					"cs35l41", cs35l41);
-	if (ret != 0) {
-		dev_err_probe(cs35l41->dev, ret, "Failed to request IRQ\n");
-		goto err;
+	/*
+	 * The IRQ line is only used for fault reporting; boards that do not
+	 * describe one (chopin's second amplifier) still work for playback.
+	 */
+	if (cs35l41->irq > 0) {
+		ret = devm_request_threaded_irq(cs35l41->dev, cs35l41->irq, NULL,
+						cs35l41_irq,
+						IRQF_ONESHOT | IRQF_SHARED | irq_pol,
+						"cs35l41", cs35l41);
+		if (ret != 0) {
+			dev_err_probe(cs35l41->dev, ret, "Failed to request IRQ\n");
+			goto err;
+		}
 	}
 
 	ret = cs35l41_set_pdata(cs35l41);
@@ -1451,7 +1458,8 @@ static int cs35l41_sys_suspend(struct device *dev)
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
 	dev_dbg(cs35l41->dev, "System suspend, disabling IRQ\n");
-	disable_irq(cs35l41->irq);
+	if (cs35l41->irq > 0)
+		disable_irq(cs35l41->irq);
 
 	return 0;
 }
@@ -1461,7 +1469,8 @@ static int cs35l41_sys_suspend_noirq(struct device *dev)
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
 	dev_dbg(cs35l41->dev, "Late system suspend, reenabling IRQ\n");
-	enable_irq(cs35l41->irq);
+	if (cs35l41->irq > 0)
+		enable_irq(cs35l41->irq);
 
 	return 0;
 }
@@ -1471,7 +1480,8 @@ static int cs35l41_sys_resume_noirq(struct device *dev)
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
 	dev_dbg(cs35l41->dev, "Early system resume, disabling IRQ\n");
-	disable_irq(cs35l41->irq);
+	if (cs35l41->irq > 0)
+		disable_irq(cs35l41->irq);
 
 	return 0;
 }
@@ -1481,7 +1491,8 @@ static int cs35l41_sys_resume(struct device *dev)
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
 	dev_dbg(cs35l41->dev, "System resume, reenabling IRQ\n");
-	enable_irq(cs35l41->irq);
+	if (cs35l41->irq > 0)
+		enable_irq(cs35l41->irq);
 
 	return 0;
 }

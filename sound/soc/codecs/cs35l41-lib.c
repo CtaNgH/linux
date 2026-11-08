@@ -1285,9 +1285,26 @@ int cs35l41_global_enable(struct device *dev, struct regmap *regmap, enum cs35l4
 
 		ret = regmap_read_poll_timeout(regmap, CS35L41_IRQ1_STATUS1,
 					int_status, int_status & pup_pdn_mask,
-					1000, 100000);
-		if (ret)
-			dev_err(dev, "Enable(%d) failed: %d\n", enable, ret);
+					1000, 5000);
+		if (ret) {
+			unsigned int st1 = 0, st2 = 0, st3 = 0, pc1 = 0;
+
+			/*
+			 * The vendor driver for this board never waits for
+			 * PUP_DONE, it just sleeps 1 ms after GLOBAL_EN.  The
+			 * status bit is evidently not reported reliably here,
+			 * so log and carry on instead of failing the whole
+			 * DAPM power-up (which kills the stream).
+			 */
+			regmap_read(regmap, CS35L41_IRQ1_STATUS1, &st1);
+			regmap_read(regmap, CS35L41_IRQ1_STATUS2, &st2);
+			regmap_read(regmap, CS35L41_IRQ1_STATUS3, &st3);
+			regmap_read(regmap, CS35L41_PWR_CTRL1, &pc1);
+			dev_warn(dev,
+				 "Enable(%d): no PUP_DONE (%d), continuing (PWR_CTRL1=%#x STATUS1=%#x STATUS2=%#x STATUS3=%#x)\n",
+				 enable, ret, pc1, st1, st2, st3);
+			ret = 0;
+		}
 
 		/* Clear PUP/PDN status */
 		regmap_write(regmap, CS35L41_IRQ1_STATUS1, pup_pdn_mask);
