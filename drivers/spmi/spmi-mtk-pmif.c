@@ -839,6 +839,15 @@ static const struct of_device_id mtk_spmi_match_table[] = {
 		.compatible = "mediatek,mt6873-spmi",
 		.data = &mt6873_pmif_arb,
 	}, {
+		/*
+		 * The vendor MT6893 PMIF uses "mediatek,mt6885-pmif" mapped to
+		 * mt6xxx_pmif_arb, and its mt6xxx_regs / mt6xxx_spmi_regs are
+		 * byte-identical to mt6873_regs / mt6873_spmi_regs here, so
+		 * reuse the mt6873 data verbatim.
+		 */
+		.compatible = "mediatek,mt6893-spmi",
+		.data = &mt6873_pmif_arb,
+	}, {
 		.compatible = "mediatek,mt8195-spmi",
 		.data = &mt8195_pmif_arb,
 	}, {

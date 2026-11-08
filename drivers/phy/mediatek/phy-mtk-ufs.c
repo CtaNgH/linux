@@ -158,25 +158,47 @@ static int ufs_mtk_phy_probe(struct platform_device *pdev)
 	if (!phy)
 		return -ENOMEM;
 
+	/*
+	 * Every step below used to fail silently, which left the UFS host stuck
+	 * on "probe failed -517" (EPROBE_DEFER, waiting for this provider) with
+	 * no hint as to why.  Report each one.
+	 */
 	phy->mmio = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(phy->mmio))
+	if (IS_ERR(phy->mmio)) {
+		dev_err(dev, "MTK-UFSPHY: ioremap_resource failed: %ld\n",
+			PTR_ERR(phy->mmio));
 		return PTR_ERR(phy->mmio);
+	}
+	dev_info(dev, "MTK-UFSPHY: mmio ok\n");
 
 	phy->dev = dev;
 
 	ret = ufs_mtk_phy_clk_init(phy);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "MTK-UFSPHY: clk init (unipro/mp) failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(dev, "MTK-UFSPHY: clocks ok (unipro, mp)\n");
 
 	generic_phy = devm_phy_create(dev, NULL, &ufs_mtk_phy_ops);
-	if (IS_ERR(generic_phy))
+	if (IS_ERR(generic_phy)) {
+		dev_err(dev, "MTK-UFSPHY: phy_create failed: %ld\n",
+			PTR_ERR(generic_phy));
 		return PTR_ERR(generic_phy);
+	}
+	dev_info(dev, "MTK-UFSPHY: phy_create ok\n");
 
 	phy_set_drvdata(generic_phy, phy);
 
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
+	if (IS_ERR(phy_provider)) {
+		dev_err(dev, "MTK-UFSPHY: provider register failed: %ld\n",
+			PTR_ERR(phy_provider));
+		return PTR_ERR(phy_provider);
+	}
+	dev_info(dev, "MTK-UFSPHY: provider registered, probe done\n");
 
-	return PTR_ERR_OR_ZERO(phy_provider);
+	return 0;
 }
 
 static const struct of_device_id ufs_mtk_phy_of_match[] = {

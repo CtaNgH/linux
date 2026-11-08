@@ -2420,6 +2420,15 @@ MODULE_PARM_DESC(debug_non_panic_cpus,
 		 "allow messages from non-panic CPUs in panic()");
 #endif
 
+#ifdef CONFIG_MTK_LOGSTORE_CONSOLE
+/*
+ * CHOPIN: mirror every formatted record into the bootloader's log_store ring
+ * in reserved DRAM.  Defined by drivers/misc/mtk-logstore-console.c, which is
+ * only built when the option above is on.
+ */
+extern void mtk_logstore_printk(const char *s, unsigned int n);
+#endif
+
 asmlinkage int vprintk_emit(int facility, int level,
 			    const struct dev_printk_info *dev_info,
 			    const char *fmt, va_list args)
@@ -2451,6 +2460,30 @@ asmlinkage int vprintk_emit(int facility, int level,
 	}
 
 	printk_delay(level);
+
+#ifdef CONFIG_MTK_LOGSTORE_CONSOLE
+	/*
+	 * CHOPIN: format the record once more and mirror it into log_store
+	 * before it is committed to the printk ring buffer.  Doing it here,
+	 * between the formatting and the store, is what makes the ring the
+	 * last thing a dying kernel writes: a hang further down still leaves
+	 * this text in DRAM for the bootloader to relay into expdb.
+	 *
+	 * mtk_logstore_printk() must not printk() and must not allocate; it
+	 * is a memcpy into reserved DRAM plus a cache clean.
+	 */
+	{
+		char xbuf[PRINTKRB_RECORD_MAX];
+		va_list xargs;
+		int n;
+
+		va_copy(xargs, args);
+		n = vscnprintf(xbuf, sizeof(xbuf), fmt, xargs);
+		va_end(xargs);
+		if (n > 0)
+			mtk_logstore_printk(xbuf, n);
+	}
+#endif
 
 	printed_len = vprintk_store(facility, level, dev_info, fmt, args);
 
