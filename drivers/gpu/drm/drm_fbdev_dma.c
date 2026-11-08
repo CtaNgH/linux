@@ -220,6 +220,17 @@ static int drm_fbdev_dma_driver_fbdev_probe_tail(struct drm_fb_helper *fb_helper
 	}
 	info->fix.smem_len = info->screen_size;
 
+	/*
+	 * chopin: the panel starts scanning this buffer out as soon as the fbdev
+	 * is registered, but nothing has drawn into it and fbcon is not attached
+	 * to mediatekdrmfb.  The GEM DMA allocation is not zeroed, so the window
+	 * between the bootloader logo and the compositor's first frame showed
+	 * whatever the allocator handed back (colour bars / garbage).  Clear it
+	 * once here so that window is black.
+	 */
+	if (info->screen_buffer && info->screen_size)
+		memset(info->screen_buffer, 0, info->screen_size);
+
 	return 0;
 }
 
