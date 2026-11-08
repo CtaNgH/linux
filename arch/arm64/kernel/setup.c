@@ -17,6 +17,7 @@
 #include <linux/cache.h>
 #include <linux/screen_info.h>
 #include <linux/init.h>
+#include <linux/mtk-logstore.h>
 #include <linux/kexec.h>
 #include <linux/root_dev.h>
 #include <linux/cpu.h>
@@ -288,8 +289,55 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 
 	early_fixmap_init();
 	early_ioremap_init();
+	mtk_logstore_breadcrumb_early("early_ioremap_init done");
 
 	setup_machine_fdt(__fdt_pointer);
+
+	/*
+	 * CHOPIN: replace the FDT LK handed us with the one linked into this
+	 * image (arch/arm64/kernel/chopin-board.dts, embedded by chopin-dtb.S).
+	 *
+	 * LK applies the dtbo partition on top of the base tree from boot.img
+	 * before it starts us.  Handing it our own board tree makes that overlay
+	 * fail - its __fixups__ section needs 60 symbols (mmc_fixed_3v3,
+	 * reserved_memory, chosen, i2c0..9, gpio, touch, usb0phy, mtkfb, dsi0,
+	 * charger, ...) that a minimal board DTS does not provide - and on this
+	 * device LK then never boots the kernel at all:
+	 *
+	 *   ERROR: ufdt_overlay_do_fixups():No node __symbols__ in main dtb.
+	 *   ERROR: ufdt_overlay_do_fixups():Couldn't find 'mmc_fixed_3v3' ...
+	 *   ufdt_apply_overlay() failed!
+	 *   boot image dtb_overlay fail
+	 *
+	 * So boot.img keeps the stock tree (LK is happy, overlay applies) and the
+	 * swap happens here instead - the same approach the MT6895 port takes.
+	 *
+	 * Right after setup_machine_fdt() is the correct point: that call has
+	 * already consumed LK's /chosen bootargs and /memory into memblock, so
+	 * everything afterwards - reserved-memory scanning, paging_init(),
+	 * unflatten_device_tree() - works off OUR tree.  Re-reading
+	 * /chosen/bootargs is what makes the cmdline in our DTS take effect.
+	 */
+	{
+		extern char _binary_chopin_board_dtb_start[];
+		extern char _binary_chopin_board_dtb_end[];
+
+		pr_info("CHOPIN-DTB: overriding LK FDT with embedded board tree (%d bytes)\n",
+			(int)(_binary_chopin_board_dtb_end -
+			      _binary_chopin_board_dtb_start));
+		/*
+		 * Verify rather than assign initial_boot_params directly: this
+		 * re-checks the header and, crucially, recomputes of_fdt_crc32.
+		 * Early boot summed LK's tree, so a bare pointer swap leaves
+		 * the late of_fdt_raw_init() comparing our tree against LK's
+		 * checksum and refusing to publish /sys/firmware/fdt
+		 * ("CRC check failed").
+		 */
+		early_init_dt_verify(_binary_chopin_board_dtb_start,
+				     __pa(_binary_chopin_board_dtb_start));
+		early_init_dt_scan_chosen(boot_command_line);
+	}
+	mtk_logstore_breadcrumb_early("setup_machine_fdt done");
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
@@ -297,6 +345,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 */
 	jump_label_init();
 	parse_early_param();
+	mtk_logstore_breadcrumb_early("parse_early_param done");
 
 	dynamic_scs_init();
 
@@ -329,9 +378,15 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			   FW_BUG "Booted with MMU enabled!");
 	}
 
+	mtk_logstore_breadcrumb_early("before memblock_init");
 	arm64_memblock_init();
+	mtk_logstore_breadcrumb_early("memblock_init done");
 
+	mtk_logstore_breadcrumb_early("before paging_init");
 	paging_init();
+
+	mtk_logstore_attach_early();
+	mtk_logstore_breadcrumb("paging_init done");
 
 	acpi_table_upgrade();
 
@@ -340,6 +395,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 
 	if (acpi_disabled)
 		unflatten_device_tree();
+	mtk_logstore_breadcrumb("unflatten_device_tree done");
 
 	bootmem_init();
 
@@ -356,6 +412,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 
 	init_bootcpu_ops();
 	smp_init_cpus();
+	mtk_logstore_breadcrumb("smp_init_cpus done");
 	smp_build_mpidr_hash();
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN

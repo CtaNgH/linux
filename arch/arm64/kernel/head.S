@@ -82,7 +82,135 @@
 	 *  x20        primary_entry() .. __primary_switch()    CPU boot mode
 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
 	 */
+
+/*
+ * Bring-up breadcrumb for MT6893/chopin.
+ *
+ * Drops a 4-byte ASCII tag into the bootloader's log_store ring while the MMU
+ * is still off: a plain physical store, so it cannot fault and it cannot be
+ * blocked by the GenieZone hypervisor.  The tags live in the same window the
+ * driver uses for its C-level breadcrumbs (0x3e000), which LK relays into the
+ * expdb partition on the next boot.
+ *
+ * The recorded log length is grown here too, so tags from a boot that dies in
+ * the first few instructions still come back.  The pl/lk descriptor lives at
+ * SRAM 0x11df00 + 0x34 ("current log header" - LK prints exactly that address),
+ * NOT at +0; the driver used to get this 0x34 bytes wrong, which is why nothing
+ * written here ever appeared in a dump.
+ *
+ * See drivers/misc/mtk-logstore-console.c and port/README.md.
+ */
+/*
+ * Second, independent readout for the same stages: paint one more stripe on the
+ * two candidate framebuffers.
+ *
+ * LK leaves the display controller scanning out its boot logo and nothing in
+ * this kernel reprograms it yet, so pixels written now are visible at once.
+ * The candidate buffers live in the vendor reserved-memory node
+ * "mblock-19-framebuffer", which the board tree marks no-map so that simplefb
+ * may ioremap it - so they are *not* in the kernel's linear map.  Every stripe
+ * below is painted before __enable_mmu, i.e. with the MMU off, so these are
+ * plain physical stores to DRAM and the no-map attribute is irrelevant.  (This
+ * is why the driver's later painter had to change: after paging_init() the same
+ * bytes are only reachable through ioremap_wc(), never through __va().)
+ *
+ * That also matters because at this point there are no exception vectors yet.
+ *
+ *   green stripes -> 0x78e0c000 is the live buffer (LK's last
+ *                    "mt_disp_config_fb_layer, addr = ...")
+ *   red stripes   -> 0x77a20000 is the live buffer (the region the vendor tree
+ *                    names "framebuffer")
+ *
+ * The number of stripes is the boot stage, so the panel alone says how far the
+ * kernel got even when every log channel fails.  Constants must match
+ * drivers/misc/mtk-logstore-console.c (FB_CAND0/1, FB_STRIDE, FB_BAND_LINES).
+ */
+	.macro	fb_band	base, stage, col_even, col_odd
+	ldr	x14, =\base + (\stage * 16 * 4352)
+	ldr	x15, =16 * 4352 / 4
+	.if ((\stage) % 2)
+	ldr	w16, =\col_odd
+	.else
+	ldr	w16, =\col_even
+	.endif
+7:
+	str	w16, [x14], #4
+	subs	x15, x15, #1
+	b.ne	7b
+	.endm
+
+/*
+ * Distinct "stuck here" marker for the one silent pre-MMU loop the boot CPU can
+ * reach: __enable_mmu()'s granule check jumps to __no_granule_support, which
+ * just does 'wfe; wfi' forever - no exception, no output, and it sits exactly
+ * one instruction after K03.  It runs with the MMU still off, so the physical
+ * writes below are safe.
+ *
+ * Paints a solid BLUE band over the top 96 lines of both framebuffers and drops
+ * a tag in both ring windows, so a blue screen means "stuck in __enable_mmu",
+ * which is a completely different diagnosis from "four stripes then nothing".
+ */
+	.macro	bc_stuck	tag
+	ldr	x9, =0x7ffbf000 + 0x7f0
+	ldr	w10, =\tag
+	str	w10, [x9]
+	ldr	x9, =0x7ffbf000 + 0x3e800
+	str	w10, [x9]
+	ldr	x14, =0x78e0c000
+	ldr	x15, =96 * 4352 / 4
+	ldr	w16, =0xff0000ff
+7:	str	w16, [x14], #4
+	subs	x15, x15, #1
+	b.ne	7b
+	ldr	x14, =0x77a20000
+	ldr	x15, =96 * 4352 / 4
+	ldr	w16, =0xff0000ff
+7:	str	w16, [x14], #4
+	subs	x15, x15, #1
+	b.ne	7b
+	dmb	sy
+	.endm
+
+	.macro	bc_tag	tag, off, stage
+	/* bootloader log_store ring -> LK relays it into the expdb partition.
+	 * Written twice: at \off in the high window and at 0x800+n*16 in the
+	 * low window, which is the range LK relays on every boot whether or not
+	 * it honours the recorded length (the working MT6895 port puts its whole
+	 * ring at 0x2000..0x10000).  Constants match the LOG_WIN_* defines in
+	 * drivers/misc/mtk-logstore-console.c. */
+	ldr	x9, =0x7ffbf000 + \off
+	ldr	w10, =\tag
+	str	w10, [x9]
+	ldr	x9, =0x7ffbf000 + 0x800 + (\stage * 16)
+	str	w10, [x9]
+
+	/* grow the recorded length so the relay covers our tag */
+	ldr	x9, =0x11df00
+	ldr	w11, [x9, #0x48]		/* dram_curlog_header.off_lk */
+	cmp	w11, #0x400
+	b.hs	8f
+	ldr	w11, =0x400			/* implausible, assume minimum */
+8:
+	cmp	w11, #0x30000
+	b.ls	9f
+	ldr	w11, =0xc85c			/* implausible, typical value  */
+9:
+	ldr	w12, =0x3f200
+	sub	w13, w12, w11
+	str	w13, [x9, #0x4c]		/* dram_curlog_header.sz_lk  */
+	str	w12, [x9, #0x20]		/* dram_buf.buf_point        */
+	str	w13, [x9, #0x5c]		/* sram_log_header.reserve[0],
+						 * "sram_log record log size" */
+	dmb	sy
+
+	/* and the same stage, on the panel */
+	fb_band	0x78e0c000, \stage, 0xff00ff00, 0xff00a000
+	fb_band	0x77a20000, \stage, 0xffff0000, 0xffa00000
+	dmb	sy
+	.endm
+
 SYM_CODE_START(primary_entry)
+	bc_tag	0x0030304b, 0x3e000, 0	// "K00" entry
 	bl	record_mmu_state
 	bl	preserve_boot_args
 
@@ -119,6 +247,7 @@ SYM_CODE_START(primary_entry)
 1:	mov	x0, x19
 	bl	init_kernel_el			// w0=cpu_boot_mode
 	mov	x20, x0
+	bc_tag	0x0031304b, 0x3e010, 1	// "K01" EL init done
 
 	/*
 	 * The following calls CPU setup code, see arch/arm64/mm/proc.S for
@@ -499,6 +628,7 @@ SYM_FUNC_START_LOCAL(__no_granule_support)
 	/* Indicate that this CPU can't boot and is stuck in the kernel */
 	update_early_cpu_boot_status \
 		CPU_STUCK_IN_KERNEL | CPU_STUCK_REASON_NO_GRAN, x1, x2
+	bc_stuck 0x0039304b		// "K09" stuck in __enable_mmu
 1:
 	wfe
 	wfi
@@ -506,8 +636,10 @@ SYM_FUNC_START_LOCAL(__no_granule_support)
 SYM_FUNC_END(__no_granule_support)
 
 SYM_FUNC_START_LOCAL(__primary_switch)
+	bc_tag	0x0032304b, 0x3e020, 2	// "K02" entered __primary_switch
 	adrp	x1, reserved_pg_dir
 	adrp	x2, __pi_init_idmap_pg_dir
+	bc_tag	0x0033304b, 0x3e030, 3	// "K03" page tables ready
 	bl	__enable_mmu
 
 	adrp	x1, early_init_stack
