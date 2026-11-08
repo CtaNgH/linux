@@ -2451,6 +2451,17 @@ static const struct of_device_id of_pwrap_match_tbl[] = {
 	{ .compatible = "mediatek,mt6795-pwrap", .data = &pwrap_mt6795 },
 	{ .compatible = "mediatek,mt6797-pwrap", .data = &pwrap_mt6797 },
 	{ .compatible = "mediatek,mt6873-pwrap", .data = &pwrap_mt6873 },
+	/*
+	 * MT6893 (Dimensity 1200) and MT6885 share the MT6873 PMIC wrapper
+	 * register map: INIT_DONE @0x0, TIMER_EN @0x3e0, INT_EN @0x448,
+	 * SWINF_2_ACC @0xc80, SWINF_2_WDATA/RDATA @0xc84/0xc94,
+	 * WACS2_VLDCLR @0xca4, WACS2_RDATA @0xca8, with the same arb_en_all
+	 * (0x777f), int_en_all (BIT(4) | BIT(5)) and PWRAP_CAP_ARB handling
+	 * (arbiter INIT_DONE bit 15).  The MT6893 vendor DTS therefore uses
+	 * "mediatek,mt6885-pwrap" with that layout, so reuse the mt6873 data
+	 * verbatim.
+	 */
+	{ .compatible = "mediatek,mt6893-pwrap", .data = &pwrap_mt6873 },
 	{ .compatible = "mediatek,mt7622-pwrap", .data = &pwrap_mt7622 },
 	{ .compatible = "mediatek,mt8135-pwrap", .data = &pwrap_mt8135 },
 	{ .compatible = "mediatek,mt8173-pwrap", .data = &pwrap_mt8173 },

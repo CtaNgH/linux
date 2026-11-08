@@ -8,6 +8,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -647,6 +648,55 @@ int mtk_dvfsrc_query_info(const struct device *dev, u32 cmd, int *data)
 }
 EXPORT_SYMBOL(mtk_dvfsrc_query_info);
 
+/*
+ * chopin: expose the DRAM gear so it can be read and forced.
+ *
+ * Upstream mtk-dvfsrc has no debugfs at all, which is why there was nothing to
+ * read back when DVFSRC was first enabled - the driver had probed fine, it just
+ * offers no interface.  "level" prints the current gear and accepts a write to
+ * force one (0 = lowest, num_opp-1 = highest).
+ */
+static ssize_t dvfsrc_level_read(struct file *f, char __user *ubuf,
+				 size_t len, loff_t *ppos)
+{
+	struct mtk_dvfsrc *dvfsrc = f->private_data;
+	char buf[64];
+	int n;
+
+	if (!dvfsrc->dvd->get_current_level)
+		return -ENODEV;
+
+	n = scnprintf(buf, sizeof(buf), "%u\n",
+		      dvfsrc->dvd->get_current_level(dvfsrc));
+	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
+}
+
+static ssize_t dvfsrc_level_write(struct file *f, const char __user *ubuf,
+				  size_t len, loff_t *ppos)
+{
+	struct mtk_dvfsrc *dvfsrc = f->private_data;
+	unsigned int level;
+	int ret;
+
+	ret = kstrtouint_from_user(ubuf, len, 0, &level);
+	if (ret)
+		return ret;
+
+	if (!dvfsrc->dvd->set_opp_level || !dvfsrc->curr_opps ||
+	    level >= dvfsrc->curr_opps->num_opp)
+		return -EINVAL;
+
+	dvfsrc->dvd->set_opp_level(dvfsrc, level);
+	return len;
+}
+
+static const struct file_operations dvfsrc_level_fops = {
+	.owner = THIS_MODULE,
+	.open  = simple_open,
+	.read  = dvfsrc_level_read,
+	.write = dvfsrc_level_write,
+};
+
 static int mtk_dvfsrc_probe(struct platform_device *pdev)
 {
 	struct arm_smccc_res ares;
@@ -696,6 +746,21 @@ static int mtk_dvfsrc_probe(struct platform_device *pdev)
 		      0, 0, 0, 0, 0, 0, &ares);
 	if (ares.a0 & BIT(0))
 		return dev_err_probe(&pdev->dev, -EINVAL, "Cannot start DVFSRC: %lu\n", ares.a0);
+
+	/*
+	 * chopin: once the MCU runs it owns bandwidth arbitration, but nothing in
+	 * this kernel votes for bandwidth - there is no ICC topology for mt6893,
+	 * panfrost has no ICC votes and the display has no mmqos - so the MCU
+	 * parks on level 0, the lowest DRAM gear.  That starves the display:
+	 * 3530 "OVL0 frame underflow" in 70 seconds and a garbled panel.
+	 * Pin the top gear until the request side exists.
+	 */
+	if (dvfsrc->dvd->set_opp_level && dvfsrc->curr_opps)
+		dvfsrc->dvd->set_opp_level(dvfsrc,
+					   dvfsrc->curr_opps->num_opp - 1);
+
+	debugfs_create_file("level", 0644, debugfs_create_dir("dvfsrc", NULL),
+			    dvfsrc, &dvfsrc_level_fops);
 
 	return 0;
 }
@@ -750,6 +815,13 @@ static const struct dvfsrc_soc_data mt6893_data = {
 	.wait_for_vcore_level = dvfsrc_wait_for_vcore_level_v1,
 	.bw_max_constraints = dvfsrc_bw_max_constr_v2,
 	.bw_min_constraints = dvfsrc_bw_min_constr_none,
+	/*
+	 * chopin: mt6893_data shipped without set_opp_level (only mt8195/8196
+	 * had it), so software had no way to pin a DRAM gear.  The OPP table is
+	 * upstream (24 levels, {vcore, dram} from {0,0} to {4,7}) and
+	 * DVFSRC_SW_REQ is exactly what the vendor kernel writes.
+	 */
+	.set_opp_level = dvfsrc_set_opp_level_v1,
 };
 
 static const struct dvfsrc_opp dvfsrc_opp_mt8183_lp4[] = {

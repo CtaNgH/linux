@@ -90,3 +90,19 @@ config MTK_SOCINFO
 	  manufacturer name, marketing name and soc name.
 
 endmenu
+
+config MTK_MBOX
+	tristate "MediaTek Mbox Support"
+	help
+	  Say yes here to add support for the MediaTek Mbox driver.
+	  MTK MBOX is a physical H/W which consists of configurable 128
+	  or 256 bytes SRAM and 32 bit irq. The driver does read/write
+	  SRAM and IRQ handling.
+
+config MTK_IPI
+	tristate "MediaTek IPI Support"
+	depends on RPMSG_MTK_MBOX
+	help
+	  Say yes here to add support for the MediaTek IPI between tinysys.
+	  MTK IPI consists of APIs to do Linux to/from uP/DSP communication
+	  based on rpmsg.
