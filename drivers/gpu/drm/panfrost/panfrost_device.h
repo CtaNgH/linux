@@ -137,6 +137,7 @@ struct panfrost_device {
 	struct clk *clock;
 	struct clk *bus_clock;
 	struct clk *bus_ace_clock;
+	struct clk *mtcmos_clks[7];
 	struct regulator_bulk_data *regulators;
 	struct reset_control *rstc;
 	/* pm_domains for devices with more than one. */
@@ -230,6 +231,13 @@ static inline struct panfrost_device *to_panfrost_device(struct drm_device *ddev
 static inline int panfrost_model_cmp(struct panfrost_device *pfdev, s32 id)
 {
 	s32 match_id = pfdev->features.id;
+
+	/* Prefer an exact ID match: newer parts such as the Mali-G77
+	 * (0x9080) report an ID that would otherwise be folded into the
+	 * low-nibble form (0x9000) used by their siblings.
+	 */
+	if (match_id == id)
+		return 0;
 
 	if (match_id & 0xf000)
 		match_id &= 0xf00f;

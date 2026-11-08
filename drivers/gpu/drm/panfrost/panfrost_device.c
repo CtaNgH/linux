@@ -3,6 +3,9 @@
 /* Copyright 2019 Linaro, Ltd, Rob Herring <robh@kernel.org> */
 
 #include <linux/clk.h>
+#include <linux/io.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/reset.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -35,6 +38,90 @@ static void panfrost_reset_fini(struct panfrost_device *pfdev)
 	reset_control_assert(pfdev->rstc);
 }
 
+/*
+ * chopin: retune the GPU clock safely.
+ *
+ * The GPU takes its clock straight from mfgpll through the mfg_sel mux, so
+ * calling clk_set_rate() on the mux makes the clock framework raise the PLL
+ * *while the mux still points at it*.  The relock glitch stalls the GPU's AXI
+ * bus and the next register access never returns - that is what hung the
+ * machine twice (the DT OPP table at probe, and a raw clk_set_rate at runtime).
+ *
+ * The vendor gpufreq driver avoids this by moving the mux onto a slow parent
+ * first.  mfg_sel's parents are clk26m, mfgpll, univpll_d6 and mainpll_d5_d2
+ * ("clk_possible_parents" in debugfs), so do the same:
+ *
+ *   mfg_sel -> clk26m        (GPU drops to 26 MHz, PLL has no consumer)
+ *   mfgpll  -> new rate      (safe to relock now)
+ *   mfg_sel -> mfgpll        (back at the new rate)
+ */
+static struct panfrost_device *chopin_pfdev;
+static struct clk *chopin_core_pll;
+static struct clk *chopin_core_slow;
+
+static int chopin_gpu_set_rate(struct panfrost_device *pfdev, unsigned long hz)
+{
+	int ret;
+
+	if (!chopin_core_pll || !chopin_core_slow || !pfdev->clock)
+		return -ENODEV;
+
+	/* Park the GPU on 26 MHz so the PLL is free. */
+	ret = clk_set_parent(pfdev->clock, chopin_core_slow);
+	if (ret)
+		return ret;
+
+	ret = clk_set_rate(chopin_core_pll, hz);
+
+	/* Switch back to the PLL even if the retune failed, otherwise the GPU
+	 * would be left running at 26 MHz. */
+	if (clk_set_parent(pfdev->clock, chopin_core_pll))
+		return -EIO;
+
+	return ret;
+}
+
+static ssize_t core_clk_rate_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	if (!chopin_pfdev || !chopin_pfdev->clock)
+		return -ENODEV;
+	return sprintf(buf, "%lu\n", clk_get_rate(chopin_pfdev->clock));
+}
+
+static ssize_t core_clk_rate_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	unsigned long rate;
+	int ret;
+
+	if (!chopin_pfdev)
+		return -ENODEV;
+
+	ret = kstrtoul(buf, 0, &rate);
+	if (ret)
+		return ret;
+
+	/* Below the boot rate is pointless; far above it is certainly unsafe
+	 * without GPU voltage control (MT6315 is not reachable from Linux). */
+	if (rate < 350000000UL || rate > 900000000UL)
+		return -EINVAL;
+
+	dev_info(dev, "chopin: GPU core %lu -> %lu Hz\n",
+		 clk_get_rate(chopin_pfdev->clock), rate);
+
+	ret = chopin_gpu_set_rate(chopin_pfdev, rate);
+	if (ret)
+		return ret;
+
+	dev_info(dev, "chopin: GPU core clock is now %lu Hz\n",
+		 clk_get_rate(chopin_pfdev->clock));
+	return count;
+}
+
+static DEVICE_ATTR_RW(core_clk_rate);
+
 static int panfrost_clk_init(struct panfrost_device *pfdev)
 {
 	int err;
@@ -52,6 +139,16 @@ static int panfrost_clk_init(struct panfrost_device *pfdev)
 	err = clk_prepare_enable(pfdev->clock);
 	if (err)
 		return err;
+
+	chopin_core_pll = devm_clk_get_optional(pfdev->base.dev, "core_pll");
+	if (IS_ERR(chopin_core_pll))
+		chopin_core_pll = NULL;
+	chopin_core_slow = devm_clk_get_optional(pfdev->base.dev, "core_slow");
+	if (IS_ERR(chopin_core_slow))
+		chopin_core_slow = NULL;
+	chopin_pfdev = pfdev;
+	if (device_create_file(pfdev->base.dev, &dev_attr_core_clk_rate))
+		dev_warn(pfdev->base.dev, "chopin: no core_clk_rate knob\n");
 
 	pfdev->bus_clock = devm_clk_get_optional(pfdev->base.dev, "bus");
 	if (IS_ERR(pfdev->bus_clock)) {
@@ -193,7 +290,6 @@ static int panfrost_pm_domain_init(struct panfrost_device *pfdev)
 				pfdev->comp->pm_domain_names[i], i, err);
 			goto err;
 		}
-
 		pfdev->pm_domain_links[i] =
 			device_link_add(pfdev->base.dev,
 					pfdev->pm_domain_devs[i], DL_FLAG_PM_RUNTIME |
@@ -213,9 +309,129 @@ err:
 	return err;
 }
 
+static const char * const chopin_mtcmos_names[7] = {
+	"mtcmos_mfg_async",
+	"mtcmos_mfg",
+	"mtcmos_mfg_core0",
+	"mtcmos_mfg_core1_2",
+	"mtcmos_mfg_core3_4",
+	"mtcmos_mfg_core5_6",
+	"mtcmos_mfg_core7_8",
+};
+
+static void chopin_mtcmos_on(struct panfrost_device *pfdev)
+{
+	struct device *dev = pfdev->base.dev;
+	int i;
+
+	if (!of_machine_is_compatible("mediatek,MT6893"))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(chopin_mtcmos_names); i++) {
+		pfdev->mtcmos_clks[i] = devm_clk_get_optional(dev,
+							      chopin_mtcmos_names[i]);
+		if (IS_ERR(pfdev->mtcmos_clks[i])) {
+			dev_warn(dev, "mtcmos %s: %ld\n", chopin_mtcmos_names[i],
+				 PTR_ERR(pfdev->mtcmos_clks[i]));
+			pfdev->mtcmos_clks[i] = NULL;
+			continue;
+		}
+		if (pfdev->mtcmos_clks[i])
+			clk_prepare_enable(pfdev->mtcmos_clks[i]);
+	}
+}
+
+static void chopin_gpu_rails_on(struct device *dev)
+{
+	struct regulator *vsram, *vgpu;
+
+	if (!of_machine_is_compatible("mediatek,MT6893"))
+		return;
+
+	/* Same order as the vendor gpufreq driver.  Going through the SPM
+	 * domain-supply path instead hard-resets this board. */
+	vsram = regulator_get(NULL, "vsram_others");
+	if (!IS_ERR_OR_NULL(vsram))
+		regulator_enable(vsram);
+
+	vgpu = regulator_get(NULL, "vgpu11");
+	if (!IS_ERR_OR_NULL(vgpu))
+		regulator_enable(vgpu);
+}
+
+/*
+ * MediaTek MFG AXI / clock-gating setup.
+ *
+ * The vendor gpufreq driver runs this right after the MFG MTCMOS islands
+ * are powered on (mt_gpufreq_external_cg_control()): it enables the memory
+ * port clock gating, stops the free-running clocks and turns on the SOC-in
+ * AXI clock and the Q-channel.  Mainline never did this, so the GPU ran
+ * with every MFG clock forced on; doing it matches the vendor power
+ * sequence and lets the GPU gate its idle clocks.
+ *
+ * The registers live in g3d_config@13fbf000, which the board DT exposes as
+ * "mediatek,mt6893-mfgcfg".  The "bus" clock (the g3d_config gate) is
+ * already enabled by panfrost_clk_init() when this runs.
+ */
+static void chopin_mfg_axi_config(struct device *dev)
+{
+	struct device_node *np;
+	struct resource res;
+	void __iomem *mfg;
+	u32 val;
+
+	if (!of_machine_is_compatible("mediatek,MT6893"))
+		return;
+
+	np = of_find_compatible_node(NULL, NULL, "mediatek,mt6893-mfgcfg");
+	if (!np)
+		return;
+	if (of_address_to_resource(np, 0, &res)) {
+		of_node_put(np);
+		return;
+	}
+	mfg = devm_ioremap(dev, res.start, resource_size(&res));
+	of_node_put(np);
+	if (!mfg) {
+		dev_warn(dev, "chopin: cannot map MFG config\n");
+		return;
+	}
+
+	/* MFG_ASYNC_CON: MEM0/1 master+slave clock gating. */
+	val = readl(mfg + 0x0020);
+	val |= BIT(22) | BIT(23) | BIT(24) | BIT(25);
+	writel(val, mfg + 0x0020);
+
+	/* MFG_ASYNC_CON_3: MEM0_1/MEM1_1 clock gating. */
+	val = readl(mfg + 0x002c);
+	val |= BIT(12) | BIT(13) | BIT(14) | BIT(15);
+	writel(val, mfg + 0x002c);
+
+	/* MFG_GLOBAL_CON: stop GPU/SOC AXI and power-CG free-run clocks. */
+	val = readl(mfg + 0x00b0);
+	val &= ~(BIT(8) | BIT(9) | BIT(10) | BIT(19));
+	writel(val, mfg + 0x00b0);
+
+	/* MFG_QCHANNEL_CON: enable the Q-channel. */
+	val = readl(mfg + 0x00b4);
+	val |= BIT(4);
+	writel(val, mfg + 0x00b4);
+
+	/* MFG_ASYNC_CON_1: enable the SOC-in AXI clock. */
+	val = readl(mfg + 0x0024);
+	val |= BIT(0);
+	writel(val, mfg + 0x0024);
+
+	dev_info(dev, "chopin MFG AXI/CG configured\n");
+}
+
+
 int panfrost_device_init(struct panfrost_device *pfdev)
 {
 	int err;
+
+	chopin_gpu_rails_on(pfdev->base.dev);
+	chopin_mtcmos_on(pfdev);
 
 	mutex_init(&pfdev->sched_lock);
 	INIT_LIST_HEAD(&pfdev->as_lru_list);
@@ -229,9 +445,21 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 	INIT_LIST_HEAD(&pfdev->debugfs.gems_list);
 #endif
 
+	pfdev->iomem = devm_platform_ioremap_resource(to_platform_device(pfdev->base.dev), 0);
+	if (IS_ERR(pfdev->iomem)) {
+		err = PTR_ERR(pfdev->iomem);
+		goto out_regulator;
+	}
+
 	err = panfrost_pm_domain_init(pfdev);
 	if (err)
 		return err;
+
+	/* Power the attached PM domains before touching the GPU registers.
+	 * panfrost_probe() used to enable runtime PM only after this function
+	 * returned, so the first reset ran with every MFG domain off. */
+	pm_runtime_enable(pfdev->base.dev);
+	pm_runtime_get_sync(pfdev->base.dev);
 
 	err = panfrost_reset_init(pfdev);
 	if (err) {
@@ -244,6 +472,8 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 		dev_err(pfdev->base.dev, "clk init failed %d\n", err);
 		goto out_reset;
 	}
+
+	chopin_mfg_axi_config(pfdev->base.dev);
 
 	err = panfrost_devfreq_init(pfdev);
 	if (err) {
@@ -259,12 +489,6 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 			goto out_devfreq;
 	}
 
-	pfdev->iomem = devm_platform_ioremap_resource(to_platform_device(pfdev->base.dev), 0);
-	if (IS_ERR(pfdev->iomem)) {
-		err = PTR_ERR(pfdev->iomem);
-		goto out_regulator;
-	}
-
 	err = panfrost_gpu_init(pfdev);
 	if (err)
 		goto out_regulator;
@@ -276,6 +500,16 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 	err = panfrost_jm_init(pfdev);
 	if (err)
 		goto out_mmu;
+
+	/*
+	 * MT6893: the first job submitted after probe is accepted by the JM
+	 * but never executed (no interrupt, no fault, slot left idle), while
+	 * the identical submission works after the timeout recovery's
+	 * panfrost_device_reset().  Repeat that reset here now that the MMU
+	 * and job manager are initialised, so the very first userspace job
+	 * already runs in the recovered state.
+	 */
+	panfrost_device_reset(pfdev, true);
 
 	err = panfrost_perfcnt_init(pfdev);
 	if (err)

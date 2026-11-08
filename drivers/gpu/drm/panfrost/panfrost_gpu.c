@@ -242,6 +242,15 @@ static const struct panfrost_model gpu_models[] = {
 	/* MediaTek MT8188 Mali-G57 MC3 */
 	GPU_MODEL(g57, 0x9093,
 		GPU_REV(g57, 0, 0)),
+
+	/* Mali-G77 (Valhall), as found in the MediaTek MT6893/MT6891.  The
+	 * G77 reports product ID 0x9080; panfrost_model_cmp() prefers an
+	 * exact ID match, so this entry is picked over the masked 0x9000
+	 * fallback used by older kernels.  MT6893 is r0p1, which per the
+	 * vendor DDK also carries TTRX_3485 on top of the r0p0 set.
+	 */
+	GPU_MODEL(g77, 0x9080,
+		GPU_REV(g77, 0, 0), GPU_REV(g77, 0, 1)),
 	{0},
 };
 

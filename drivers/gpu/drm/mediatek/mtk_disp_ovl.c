@@ -269,6 +269,10 @@ void mtk_ovl_start(struct device *dev)
 		writel_relaxed(reg, ovl->regs + DISP_REG_OVL_DATAPATH_CON);
 	}
 	writel_relaxed(0x1, ovl->regs + DISP_REG_OVL_EN);
+
+	dev_info(dev, "ovl started: EN=%x DATAPATH_CON=%x\n",
+		 readl(ovl->regs + DISP_REG_OVL_EN),
+		 readl(ovl->regs + DISP_REG_OVL_DATAPATH_CON));
 }
 
 void mtk_ovl_stop(struct device *dev)

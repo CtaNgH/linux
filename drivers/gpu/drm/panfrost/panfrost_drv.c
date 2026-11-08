@@ -935,7 +935,16 @@ static void panfrost_debugfs_init(struct drm_minor *minor)
  *	   DRM_PANFROST_PARAM_SELECTED_COHERENCY
  */
 static const struct drm_driver panfrost_drm_driver = {
-	.driver_features	= DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ,
+	/* DRIVER_SYNCOBJ_TIMELINE is what DRM_IOCTL_SYNCOBJ_EVENTFD checks
+	 * (drm_syncobj_eventfd_ioctl() returns -EOPNOTSUPP without it).  The
+	 * explicit-sync paths in Wayland compositors build on that ioctl, so
+	 * compositors probe it and disable wp_linux_drm_syncobj_manager_v1 when
+	 * it is missing - Denial does exactly that on this board.  Syncobj
+	 * timelines are core DRM, not driver specific, so advertise both like
+	 * panthor and msm do.
+	 */
+	.driver_features	= DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ |
+				  DRIVER_SYNCOBJ_TIMELINE,
 	.open			= panfrost_open,
 	.postclose		= panfrost_postclose,
 	.show_fdinfo		= panfrost_show_fdinfo,
@@ -989,9 +998,7 @@ static int panfrost_probe(struct platform_device *pdev)
 		goto err_out0;
 	}
 
-	pm_runtime_set_active(pfdev->base.dev);
 	pm_runtime_mark_last_busy(pfdev->base.dev);
-	pm_runtime_enable(pfdev->base.dev);
 	pm_runtime_set_autosuspend_delay(pfdev->base.dev, 50); /* ~3 frames */
 	pm_runtime_use_autosuspend(pfdev->base.dev);
 
@@ -1135,6 +1142,14 @@ static const struct panfrost_compatible mediatek_mt8188_data = {
 	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
 };
 
+/* The GPU rails and the MFG MTCMOS islands are driven explicitly by the
+ * chopin hooks in panfrost_device.c; going through SPM power domains or
+ * regulators on this board hard-resets it. */
+static const struct panfrost_compatible mediatek_mt6893_data = {
+	.num_supplies = 0,
+	.num_pm_domains = 0,
+};
+
 static const struct panfrost_compatible mediatek_mt8192_data = {
 	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
 	.supply_names = default_supplies,
@@ -1176,6 +1191,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "mediatek,mt8183b-mali", .data = &mediatek_mt8183_b_data },
 	{ .compatible = "mediatek,mt8186-mali", .data = &mediatek_mt8186_data },
 	{ .compatible = "mediatek,mt8188-mali", .data = &mediatek_mt8188_data },
+	{ .compatible = "mediatek,mt6893-mali", .data = &mediatek_mt6893_data },
 	{ .compatible = "mediatek,mt8192-mali", .data = &mediatek_mt8192_data },
 	{ .compatible = "mediatek,mt8370-mali", .data = &mediatek_mt8370_data },
 	{ .compatible = "allwinner,sun50i-h616-mali", .data = &default_pm_rt_data },

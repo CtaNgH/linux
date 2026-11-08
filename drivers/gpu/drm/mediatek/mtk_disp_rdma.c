@@ -172,8 +172,15 @@ void mtk_rdma_clk_disable(struct device *dev)
 
 void mtk_rdma_start(struct device *dev)
 {
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
 	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, RDMA_ENGINE_EN,
 			 RDMA_ENGINE_EN);
+
+	dev_info(dev, "rdma started: GLOBAL_CON=%x SIZE0=%x SIZE1=%x\n",
+		 readl(rdma->regs + DISP_REG_RDMA_GLOBAL_CON),
+		 readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_0),
+		 readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_1));
 }
 
 void mtk_rdma_stop(struct device *dev)

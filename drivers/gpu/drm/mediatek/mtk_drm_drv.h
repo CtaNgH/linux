@@ -52,6 +52,8 @@ struct mtk_mmsys_driver_data {
 	u16 min_height;
 };
 
+void mtk_drm_log_mmsys_routes(struct device *dev, struct device *mmsys_dev);
+
 struct mtk_drm_private {
 	struct drm_device *drm;
 	bool mtk_drm_bound;
@@ -81,4 +83,8 @@ extern struct platform_driver mtk_dsi_driver;
 extern struct platform_driver mtk_ethdr_driver;
 extern struct platform_driver mtk_mdp_rdma_driver;
 extern struct platform_driver mtk_padding_driver;
+bool mtk_drm_adopt_lk_display(void);
+
+void mtk_crtc_adopt_start_copy(void);
+
 #endif /* MTK_DRM_DRV_H */

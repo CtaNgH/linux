@@ -30,7 +30,26 @@
 
 #include "mtk_ddp_comp.h"
 #include "mtk_disp_drv.h"
+#include "mtk_disp_trace.h"
 #include "mtk_drm_drv.h"
+
+/*
+ * Plan A for chopin: the bootloader (LK) already drives this panel in the mode
+ * it needs (DSC-compressed video) and its logo is visible on screen.  Resetting
+ * the DSI engine, forcing command mode and re-initialising the panel throws that
+ * working state away and replaces it with an uncompressed stream the panel
+ * cannot decode - which is why the screen goes black once we take over.
+ *
+ * With this enabled the driver only powers the PHY/clocks (like the MT6895
+ * mainline port's "assume DSI0 enable already in LK" path) and leaves the video
+ * timing, PSCTRL and the panel state exactly as LK left them.
+ *
+ * Set mtk_dsi.adopt_lk_display=0 for the previous re-initialising behaviour.
+ */
+static bool adopt_lk_display = true;
+module_param(adopt_lk_display, bool, 0644);
+MODULE_PARM_DESC(adopt_lk_display,
+		 "Keep the bootloader's DSI video/DSC stream and panel state (default: on)");
 
 #define DSI_START		0x00
 
@@ -221,6 +240,8 @@ struct mtk_dsi {
 	int refcount;
 	bool enabled;
 	bool lanes_ready;
+	bool irq_polled;	/* bring-up: irq never arrived, INTSTA polled */
+	unsigned int xfer_steps;	/* bring-up: first-transfer trace counter */
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
@@ -620,6 +641,8 @@ static void mtk_dsi_irq_data_clear(struct mtk_dsi *dsi, u32 irq_bit)
 	dsi->irq_data &= ~irq_bit;
 }
 
+static void mtk_dsi_trace(struct mtk_dsi *dsi, const char *step);
+
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
@@ -627,11 +650,133 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 	unsigned long jiffies = msecs_to_jiffies(timeout);
 	struct drm_device *drm = dsi->bridge.dev;
 
-	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
-					       dsi->irq_data & irq_flag,
-					       jiffies);
+	/*
+	 * Poll first, and only fall back to the waitqueue: on this board the
+	 * DSI interrupt is never delivered to the CPU (the line is registered,
+	 * INTEN enables the event and DSI_INTSTA latches CMD_DONE, but the
+	 * count in /proc/interrupts stays 0), so waiting for it costs the full
+	 * timeout per command - 53 commands of panel init took minutes and the
+	 * whole modeset looked hung.  Polling DSI_INTSTA finds the event within
+	 * tens of microseconds.
+	 */
+	unsigned long deadline = jiffies + msecs_to_jiffies(timeout);
+
+	mtk_dsi_trace(dsi, "wait: enter (polling)");
+	while (time_before(jiffies, deadline)) {
+		u32 status = readl(dsi->regs + DSI_INTSTA) & irq_flag;
+
+		if (dsi->irq_data & irq_flag) {
+			mtk_dsi_trace(dsi, "wait: done (interrupt)");
+			return 1;
+		}
+		if (status) {
+			u32 tmp;
+
+			do {
+				mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
+				tmp = readl(dsi->regs + DSI_INTSTA);
+			} while ((tmp & DSI_BUSY) &&
+				 time_before(jiffies, deadline));
+
+			mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
+			mtk_dsi_irq_data_set(dsi, status);
+			if (!dsi->irq_polled) {
+				dsi->irq_polled = true;
+				dev_info(dsi->host.dev,
+					 "irq 0x%08x never delivered, found in INTSTA by polling\n",
+					 status);
+			}
+			mtk_dsi_trace(dsi, "wait: done (poll)");
+			return 1;
+		}
+		usleep_range(50, 100);
+	}
+
+	mtk_dsi_trace(dsi, "wait: timed out");
+	mtk_disp_trace("dsi wait TIMED OUT: INTSTA=0x%x INTEN=0x%x MODE_CTRL=0x%x",
+		       readl(dsi->regs + DSI_INTSTA), readl(dsi->regs + DSI_INTEN),
+		       readl(dsi->regs + DSI_MODE_CTRL));
+	ret = 0;
 	if (ret == 0) {
-		drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
+		/*
+		 * The waitqueue timed out.  DSI_INTSTA latches exactly the same
+		 * flags in hardware, independently of whether the interrupt ever
+		 * reached the CPU, so poll it before declaring failure.  On this
+		 * board that is the difference between a panel that can be
+		 * initialised and one that cannot: the first DCS command needs
+		 * the VM_DONE event of the video->command mode switch, and with
+		 * no interrupt delivered every transfer returns -ETIME at the
+		 * very first step (observed: "failed to write command 0 (0xff):
+		 * -62").
+		 *
+		 * Success here proves the controller works and the interrupt
+		 * delivery is what is broken, so say so once.
+		 */
+		unsigned long deadline = jiffies + msecs_to_jiffies(200);
+
+		mtk_disp_trace("dsi poll: entering loop (INTSTA=0x%x)",
+			       readl(dsi->regs + DSI_INTSTA));
+		while (time_before(jiffies, deadline)) {
+			u32 status = readl(dsi->regs + DSI_INTSTA) & irq_flag;
+			u32 tmp;
+
+			if (status) {
+				/*
+				 * Same RACK handshake as the interrupt handler,
+				 * and it must be bounded here too: an earlier
+				 * version of this loop copied the vendor's
+				 * unbounded `while (tmp & DSI_BUSY)` and hung
+				 * the modeset thread forever inside the panel's
+				 * very first command - no timeout, no message,
+				 * while the rest of the board kept running.
+				 * Clear the status regardless; the flag is what
+				 * the transfer needed.
+				 */
+				unsigned long rack = jiffies +
+						     msecs_to_jiffies(20);
+
+				do {
+					mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
+					tmp = readl(dsi->regs + DSI_INTSTA);
+					if (!(tmp & DSI_BUSY))
+						break;
+				} while (time_before(jiffies, rack));
+
+				if (tmp & DSI_BUSY)
+					dev_warn_ratelimited(dsi->host.dev,
+							     "INTSTA poll: RACK still busy (INTSTA=0x%08x), clearing anyway\n",
+							     tmp);
+
+				mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
+				mtk_dsi_irq_data_set(dsi, status);
+
+				mtk_dsi_trace(dsi, "poll: flag found");
+				if (!dsi->irq_polled) {
+					dsi->irq_polled = true;
+					dev_info(dsi->host.dev,
+						 "irq 0x%08x was never delivered, found in INTSTA by polling\n",
+						 status);
+				}
+				return 1;
+			}
+			udelay(20);
+		}
+		mtk_disp_trace("dsi poll: loop done (INTSTA=0x%x)",
+			       readl(dsi->regs + DSI_INTSTA));
+		mtk_dsi_trace(dsi, "poll: nothing latched");
+
+		/*
+		 * Nothing latched either.  Print the controller state: if INTSTA
+		 * has the flag but INTEN does not, the interrupt was masked at
+		 * the controller; if neither has it, the controller never ran
+		 * the command (clock/power), which points somewhere else
+		 * entirely than a broken GIC line.
+		 */
+		drm_warn(drm,
+			 "Wait DSI IRQ(0x%08x) Timeout: INTSTA=0x%08x INTEN=0x%08x MODE_CTRL=0x%08x\n",
+			 irq_flag, readl(dsi->regs + DSI_INTSTA),
+			 readl(dsi->regs + DSI_INTEN),
+			 readl(dsi->regs + DSI_MODE_CTRL));
 
 		mtk_dsi_enable(dsi);
 		mtk_dsi_reset_engine(dsi);
@@ -649,10 +794,31 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 	status = readl(dsi->regs + DSI_INTSTA) & flag;
 
 	if (status) {
+		/*
+		 * RACK handshake.  The vendor loop is unbounded: if the
+		 * controller never clears DSI_BUSY this spins forever *inside
+		 * the interrupt handler*, with interrupts disabled, which hangs
+		 * the CPU and every transfer waiting for this handler to wake
+		 * its waitqueue.  That is a plausible explanation for this
+		 * board going unresponsive right after the display takes over,
+		 * so bound it and record the raw status instead.
+		 */
+		unsigned long deadline = jiffies + msecs_to_jiffies(50);
+		bool stuck = true;
+
 		do {
 			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
 			tmp = readl(dsi->regs + DSI_INTSTA);
-		} while (tmp & DSI_BUSY);
+			if (!(tmp & DSI_BUSY)) {
+				stuck = false;
+				break;
+			}
+		} while (time_before(jiffies, deadline));
+
+		if (stuck)
+			dev_warn_ratelimited(dsi->host.dev,
+					     "RACK handshake stuck after 50 ms: INTSTA=0x%08x INTEN=0x%08x\n",
+					     tmp, readl(dsi->regs + DSI_INTEN));
 
 		mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
 		mtk_dsi_irq_data_set(dsi, status);
@@ -660,6 +826,38 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 	}
 
 	return IRQ_HANDLED;
+}
+
+/*
+ * Bring-up trace: print the controller state at each step of the first DSI
+ * transfer only (the panel sends 53 commands at probe; we do not want 53
+ * traces).  Whichever step is missing from dmesg is where the transfer got
+ * stuck.
+ */
+static void mtk_dsi_trace(struct mtk_dsi *dsi, const char *step)
+{
+	/*
+	 * Always into the lock-free ring, and into dmesg only for the first
+	 * transfer.  The ring is what survives: the dev_info() traces vanished
+	 * on the device while printk itself kept working.
+	 */
+	/*
+	 * Only the first few transfers: the panel sends 53 commands and each
+	 * one used to emit five ring entries plus five dmesg lines, which
+	 * buried the useful log and (at 115200 baud) backed the console up.
+	 */
+	if (dsi->xfer_steps > 24)
+		return;
+	dsi->xfer_steps++;
+
+	mtk_disp_trace("dsi %s: MODE_CTRL=0x%x INTSTA=0x%x INTEN=0x%x",
+		       step, readl(dsi->regs + DSI_MODE_CTRL),
+		       readl(dsi->regs + DSI_INTSTA),
+		       readl(dsi->regs + DSI_INTEN));
+	dev_info(dsi->host.dev,
+		 "xfer[%d] %s: MODE_CTRL=0x%x INTSTA=0x%x INTEN=0x%x\n",
+		 dsi->xfer_steps, step, readl(dsi->regs + DSI_MODE_CTRL),
+		 readl(dsi->regs + DSI_INTSTA), readl(dsi->regs + DSI_INTEN));
 }
 
 static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
@@ -674,6 +872,40 @@ static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 	} else {
 		return 0;
 	}
+}
+
+/*
+ * Force command mode without waiting for the VM_DONE event.
+ *
+ * Needed on this board and nowhere else: the bootloader (LK) hands the DSI
+ * over already streaming in video mode with status latched - the trace shows
+ * MODE_CTRL=0x1, INTSTA=0x17b2 (FIFO/error bits from LK's stream, whose
+ * framebuffer Linux has long since reused) and DSI_START still set.  The
+ * video->command transition then never latches VM_DONE (bit 3 stayed clear
+ * through a second and a half of polling), so waiting for it is what made the
+ * panel's very first DCS command fail with -ETIME and then hang the modeset
+ * worker in D state.
+ *
+ * Stopping the stream (DSI_START=0), clearing the latched status and selecting
+ * command mode, with a short settle, is enough to get a known state.
+ */
+static void mtk_dsi_force_cmd_mode(struct mtk_dsi *dsi)
+{
+	/*
+	 * Stopping the stream and switching MODE_CTRL is not enough: the trace
+	 * shows the video engine still generating VM/FRAME and TE_TIMEOUT
+	 * events afterwards (INTSTA=0x80005790: bits 4,7,8,9,10,12,14 - and
+	 * CMD_DONE, bit 1, never) and the command queue never completing, so
+	 * the controller stays in a mixed state.  Reset the engine as well:
+	 * LK hands it over mid-stream and mainline only ever sees it idle out
+	 * of reset.
+	 */
+	mtk_dsi_stop(dsi);
+	mtk_dsi_reset_engine(dsi);
+	mtk_dsi_set_cmd_mode(dsi);
+	writel(0, dsi->regs + DSI_INTSTA);
+	dsi->irq_data = 0;
+	usleep_range(2000, 3000);
 }
 
 static void mtk_dsi_lane_ready(struct mtk_dsi *dsi)
@@ -732,6 +964,24 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 
 	mtk_dsi_enable(dsi);
 
+	/*
+	 * Snapshot what the bootloader left behind, then put the controller in
+	 * a known command-mode state (see mtk_dsi_force_cmd_mode).
+	 */
+	mtk_disp_trace("dsi poweron: leftover MODE_CTRL=0x%x INTSTA=0x%x START=0x%x",
+		       readl(dsi->regs + DSI_MODE_CTRL),
+		       readl(dsi->regs + DSI_INTSTA),
+		       readl(dsi->regs + DSI_START));
+	if (adopt_lk_display) {
+		mtk_disp_trace("dsi poweron: adopting LK state (no reset, no forced command mode)");
+	} else {
+		mtk_dsi_force_cmd_mode(dsi);
+		mtk_disp_trace("dsi poweron: forced MODE_CTRL=0x%x INTSTA=0x%x START=0x%x",
+			       readl(dsi->regs + DSI_MODE_CTRL),
+			       readl(dsi->regs + DSI_INTSTA),
+			       readl(dsi->regs + DSI_START));
+	}
+
 	if (dsi->driver_data->has_shadow_ctl)
 		writel(FORCE_COMMIT | BYPASS_SHADOW,
 		       dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
@@ -756,6 +1006,11 @@ err_refcount:
 
 static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 {
+	if (adopt_lk_display) {
+		mtk_disp_trace("dsi poweroff: adopt mode, keeping the LK stream and PHY PLL alive");
+		return;
+	}
+
 	if (WARN_ON(dsi->refcount == 0))
 		return;
 
@@ -771,7 +1026,8 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	 */
 	mtk_dsi_stop(dsi);
 
-	mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
+	mtk_dsi_set_cmd_mode(dsi);
+	writel(0, dsi->regs + DSI_INTSTA);
 	mtk_dsi_reset_engine(dsi);
 	mtk_dsi_lane0_ulp_mode_enter(dsi);
 	mtk_dsi_clk_ulp_mode_enter(dsi);
@@ -793,14 +1049,51 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi)
 	if (dsi->enabled)
 		return;
 
+	if (adopt_lk_display) {
+		/*
+		 * LK's video mode (with DSC) is already running: do not touch
+		 * MODE_CTRL/PSCTRL/timings, just record that the output is up.
+		 */
+		dsi->enabled = true;
+		mtk_disp_trace("dsi output enable: adopted LK stream (left as-is)");
+		return;
+	}
+
 	mtk_dsi_set_mode(dsi);
 	mtk_dsi_start(dsi);
+	mtk_dsi_trace(dsi, "output enable (video mode started)");
+
+	/*
+	 * One-shot bring-up log.  arm64 has no usable /dev/mem, so this is the
+	 * cheapest way to see whether the controller really accepted what the
+	 * driver programmed: START=1 means the video stream was launched, the
+	 * PS/SIZE and timing word counts must match the panel mode, and the
+	 * PHY timing registers must be non-zero.
+	 */
+	dev_info(dsi->dev,
+		 "enabled: START=0x%x MODE_CTRL=0x%x PSCTRL=0x%x SIZE_CON=0x%x VSA=%u VBP=%u VFP=%u VACT=%u HSA=%u HBP=%u HFP=%u\n",
+		 readl(dsi->regs + DSI_START),
+		 readl(dsi->regs + DSI_MODE_CTRL),
+		 readl(dsi->regs + DSI_PSCTRL),
+		 readl(dsi->regs + DSI_SIZE_CON),
+		 readl(dsi->regs + DSI_VSA_NL),
+		 readl(dsi->regs + DSI_VBP_NL),
+		 readl(dsi->regs + DSI_VFP_NL),
+		 readl(dsi->regs + DSI_VACT_NL),
+		 readl(dsi->regs + DSI_HSA_WC),
+		 readl(dsi->regs + DSI_HBP_WC),
+		 readl(dsi->regs + DSI_HFP_WC));
 
 	dsi->enabled = true;
 }
 
 static void mtk_output_dsi_disable(struct mtk_dsi *dsi)
 {
+	if (adopt_lk_display) {
+		mtk_disp_trace("dsi output disable: adopted LK stream (left running)");
+		return;
+	}
+
 	if (!dsi->enabled)
 		return;
 
@@ -1134,20 +1427,23 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	u32 dsi_mode;
 	int ret, i;
 
+	mtk_dsi_trace(dsi, "entry");
 	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL);
-	if (dsi_mode & MODE) {
-		mtk_dsi_stop(dsi);
-		ret = mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
-		if (ret)
-			goto restore_dsi_mode;
+	if ((dsi_mode & MODE) && !adopt_lk_display) {
+		/* do not wait for an event that never latches here */
+		mtk_dsi_force_cmd_mode(dsi);
+		mtk_dsi_trace(dsi, "video stopped, command mode forced");
+		ret = 0;
 	}
 
 	if (MTK_DSI_HOST_IS_READ(msg->type))
 		irq_flag |= LPRX_RD_RDY_INT_FLAG;
 
 	mtk_dsi_lane_ready(dsi);
+	mtk_dsi_trace(dsi, "lane ready");
 
 	ret = mtk_dsi_host_send_cmd(dsi, msg, irq_flag);
+	mtk_dsi_trace(dsi, ret ? "send cmd FAILED" : "send cmd ok");
 	if (ret)
 		goto restore_dsi_mode;
 
@@ -1258,6 +1554,15 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
 	}
 
+	/*
+	 * Record the interrupt number: the console this board is debugged over
+	 * truncates /proc/interrupts, so knowing the number here lets it be
+	 * matched unambiguously to a line in the register dump or a storm.
+	 */
+	dev_info(dev, "ready: irq %d, %u lanes\n", irq_num, dsi->lanes);
+	mtk_disp_trace_init();
+	mtk_disp_trace("dsi probe done: irq %d lanes %u", irq_num, dsi->lanes);
+
 	dsi->bridge.of_node = dev->of_node;
 	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
 
@@ -1292,6 +1597,19 @@ static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
 	.has_size_ctl = true,
 };
 
+/*
+ * MT6893 shares the DSI IP generation of MT8183: command queue at 0x200,
+ * VM command at 0x130 and the shadow debug register at 0x190.  Unlike MT8183
+ * the vendor driver for this SoC never writes the shadow control bits (its
+ * DSI data has no shadow support), so .has_shadow_ctl is left false.
+ */
+static const struct mtk_dsi_driver_data mt6893_dsi_driver_data = {
+	.reg_cmdq_off = 0x200,
+	.reg_vm_cmd_off = 0x130,
+	.reg_shadow_dbg_off = 0x190,
+	.has_size_ctl = true,
+};
+
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
 	.reg_cmdq_off = 0xd00,
 	.reg_vm_cmd_off = 0x200,
@@ -1315,6 +1633,7 @@ static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt8167-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
+	{ .compatible = "mediatek,mt6893-dsi", .data = &mt6893_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
 	{ /* sentinel */ }
