@@ -373,6 +373,64 @@ config COMMON_CLK_MT6797_VENCSYS
 	help
 	  This driver supports MediaTek MT6797 vencsys clocks.
 
+config COMMON_CLK_MT6893
+	tristate "System clock driver for MediaTek Dimensity 1200 MT6893"
+	depends on ARM64 || COMPILE_TEST
+	select COMMON_CLK_MEDIATEK
+	select COMMON_CLK_MEDIATEK_FHCTL
+	default ARM64
+	help
+	  This driver supports MediaTek Dimensity 1200 MT6893 basic clocks.
+
+config COMMON_CLK_MT6893_IMP_IIC_WRAP
+	tristate "Clock driver for MediaTek MT6893 imp_iic_wrap"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 imp_iic_wrap clocks.
+
+config COMMON_CLK_MT6893_MDPSYS
+	tristate "Clock driver for MediaTek MT6893 mdpsys"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 mdpsys clocks.
+
+config COMMON_CLK_MT6893_MFGCFG
+	tristate "Clock driver for MediaTek MT6893 mfgcfg"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 mfgcfg clocks.
+
+config COMMON_CLK_MT6893_MMSYS
+	tristate "Clock driver for MediaTek MT6893 mmsys"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 mmsys clocks.
+
+config COMMON_CLK_MT6893_SCP_ADSP
+	tristate "Clock driver for MediaTek MT6893 scp_adsp"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 scp_adsp clocks.
+
+config COMMON_CLK_MT6893_VDECSYS
+	tristate "Clock driver for MediaTek MT6893 vdecsys"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 vdecsys and vdecsys_soc clocks.
+
+config COMMON_CLK_MT6893_VENCSYS
+	tristate "Clock driver for MediaTek MT6893 vencsys"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 vencsys clocks.
+
 config COMMON_CLK_MT7622
 	tristate "Clock driver for MediaTek MT7622"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
@@ -841,6 +899,13 @@ config COMMON_CLK_MT8192_AUDSYS
 	help
 	  This driver supports MediaTek MT8192 audsys clocks.
 
+config COMMON_CLK_MT6893_AUDSYS
+	tristate "Clock driver for MediaTek MT6893 audsys"
+	depends on COMMON_CLK_MT6893
+	default COMMON_CLK_MT6893
+	help
+	  This driver supports MediaTek MT6893 audsys clocks.
+
 config COMMON_CLK_MT8192_CAMSYS
 	tristate "Clock driver for MediaTek MT8192 camsys"
 	depends on COMMON_CLK_MT8192
@@ -1149,3 +1214,9 @@ config COMMON_CLK_MT8516_AUDSYS
 	  This driver supports MediaTek MT8516 audsys clocks.
 
 endmenu
+
+config COMMON_CLK_MT6893_PG
+	bool "Clock driver for MT6893 MFG MTCMOS"
+	depends on COMMON_CLK_MT6893
+	help
+	  Minimal MTCMOS clock provider for the MT6893 MFG (GPU) islands.
