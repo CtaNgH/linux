@@ -265,6 +265,27 @@ enum panfrost_hw_issue {
 #define hw_issues_g57_r0p0 (\
 	BIT_ULL(HW_ISSUE_TTRX_3485))
 
+/* Mali-G77 (TTRx, Valhall).
+ *
+ * The vendor DDK (mali-r32p1) lists for base_hw_issues_tTRx_r0p1:
+ * 9435, TSIX_2033, TTRX_1337, TTRX_2968_TTRX_3162, TTRX_3076, TTRX_921,
+ * TTRX_3414, GPU2017_1336, TTRX_3083, TTRX_3470, TTRX_3464 and
+ * TTRX_3485.  9435 comes from hw_issues_all(); only the workarounds the
+ * mainline driver actually implements are listed here.  The compiler-side
+ * ones (1337/3414/3083/3470/3464/TSIX_2033) belong in Mesa, and
+ * TTRX_3485 (dummy job before the first real work) is issued by the
+ * vendor's userspace driver, so the bit is informational for now.
+ */
+#define hw_issues_g77 (\
+	BIT_ULL(HW_ISSUE_TTRX_2968_TTRX_3162) | \
+	BIT_ULL(HW_ISSUE_TTRX_3076))
+
+#define hw_issues_g77_r0p0 (\
+	BIT_ULL(HW_ISSUE_TTRX_3485))
+
+#define hw_issues_g77_r0p1 (\
+	BIT_ULL(HW_ISSUE_TTRX_3485))
+
 static inline bool panfrost_has_hw_issue(const struct panfrost_device *pfdev,
 					 enum panfrost_hw_issue issue)
 {

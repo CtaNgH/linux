@@ -763,6 +763,8 @@ static enum drm_gpu_sched_stat panfrost_job_timedout(struct drm_sched_job
 	struct panfrost_job *job = to_panfrost_job(sched_job);
 	struct panfrost_device *pfdev = job->pfdev;
 	int js = panfrost_job_get_slot(job);
+	u64 fault_addr;
+	u32 js_state, rawstat, fault;
 
 	/*
 	 * If the GPU managed to complete this jobs fence, the timeout has
@@ -787,13 +789,23 @@ static enum drm_gpu_sched_stat panfrost_job_timedout(struct drm_sched_job
 		return DRM_GPU_SCHED_STAT_NO_HANG;
 	}
 
-	dev_err(pfdev->base.dev, "gpu sched timeout, js=%d, config=0x%x, status=0x%x, head=0x%x, tail=0x%x, sched_job=%p",
+	js_state = job_read(pfdev, JOB_INT_JS_STATE);
+	rawstat = job_read(pfdev, JOB_INT_RAWSTAT);
+	fault = gpu_read(pfdev, GPU_FAULT_STATUS);
+	fault_addr = gpu_read(pfdev, GPU_FAULT_ADDRESS_LO) |
+		     ((u64)gpu_read(pfdev, GPU_FAULT_ADDRESS_HI) << 32);
+
+	dev_err(pfdev->base.dev,
+		"gpu sched timeout, js=%d, config=0x%x, status=0x%x, head=0x%x, tail=0x%x, js_state=0x%x, int_rawstat=0x%x, fault=0x%x addr=0x%llx, cmd=0x%x cmd_next=0x%x jc=0x%llx, sched_job=%p",
 		js,
 		job_read(pfdev, JS_CONFIG(js)),
 		job_read(pfdev, JS_STATUS(js)),
 		job_read(pfdev, JS_HEAD_LO(js)),
 		job_read(pfdev, JS_TAIL_LO(js)),
-		sched_job);
+		js_state, rawstat, fault, fault_addr,
+		job_read(pfdev, JS_COMMAND(js)),
+		job_read(pfdev, JS_COMMAND_NEXT(js)),
+		job->jc, sched_job);
 
 	panfrost_core_dump(job);
 

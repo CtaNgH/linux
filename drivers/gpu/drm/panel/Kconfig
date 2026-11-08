@@ -444,6 +444,17 @@ config DRM_PANEL_JDI_R63452
 	  Say Y here if you want to enable support for the JDI R63452
 	  DSI command mode panel as found in Xiaomi Mi 5 Devices.
 
+
+config DRM_PANEL_K10A_36_02_0A
+	tristate "k10a_36_02_0a 1080x2400 DSI panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on GPIOLIB
+	help
+	  Say Y here if you want to enable support for the k10a_36_02_0a
+	  panel, a 1080x2400 4-lane MIPI-DSI video mode panel with DSC as
+	  found on the Xiaomi Redmi Note 10 Pro (chopin, MT6893).
+
 config DRM_PANEL_KHADAS_TS050
 	tristate "Khadas TS050 panel"
 	depends on OF

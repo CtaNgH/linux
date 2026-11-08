@@ -121,6 +121,23 @@ enum panfrost_hw_feature {
 	BIT_ULL(HW_FEATURE_IDVS_GROUP_SIZE) | \
 	BIT_ULL(HW_FEATURE_CLEAN_ONLY_SAFE))
 
+/* Mali-G77 (TTRx, Valhall, e.g. MediaTek MT6893).  Matches the vendor DDK's
+ * base_hw_features_tTRx (mali-r32p1) for the job-manager bits, plus the
+ * kernel-only PROTECTED_MODE / AARCH64_MMU features that all Valhall JM
+ * parts advertise.
+ */
+#define hw_features_g77 (\
+	BIT_ULL(HW_FEATURE_JOBCHAIN_DISAMBIGUATION) | \
+	BIT_ULL(HW_FEATURE_PWRON_DURING_PWROFF_TRANS) | \
+	BIT_ULL(HW_FEATURE_XAFFINITY) | \
+	BIT_ULL(HW_FEATURE_FLUSH_REDUCTION) | \
+	BIT_ULL(HW_FEATURE_PROTECTED_MODE) | \
+	BIT_ULL(HW_FEATURE_PROTECTED_DEBUG_MODE) | \
+	BIT_ULL(HW_FEATURE_COHERENCY_REG) | \
+	BIT_ULL(HW_FEATURE_AARCH64_MMU) | \
+	BIT_ULL(HW_FEATURE_IDVS_GROUP_SIZE) | \
+	BIT_ULL(HW_FEATURE_CLEAN_ONLY_SAFE))
+
 static inline bool panfrost_has_hw_feature(struct panfrost_device *pfdev,
 					   enum panfrost_hw_feature feat)
 {

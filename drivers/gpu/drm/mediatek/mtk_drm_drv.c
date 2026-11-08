@@ -6,12 +6,15 @@
 
 #include <linux/aperture.h>
 #include <linux/component.h>
+#include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/dma-mapping.h>
+#include <linux/seq_file.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
@@ -193,6 +196,18 @@ static const struct mtk_drm_route mt8188_mtk_ddp_main_routes[] = {
 	{0, DDP_COMPONENT_DSI0},
 };
 
+static const unsigned int mt6893_mtk_ddp_main[] = {
+	DDP_COMPONENT_OVL0,
+	DDP_COMPONENT_RDMA0,
+	DDP_COMPONENT_COLOR0,
+	DDP_COMPONENT_CCORR,
+	DDP_COMPONENT_AAL0,
+	DDP_COMPONENT_GAMMA,
+	DDP_COMPONENT_POSTMASK0,
+	DDP_COMPONENT_DITHER0,
+	DDP_COMPONENT_DSI0,
+};
+
 static const unsigned int mt8192_mtk_ddp_main[] = {
 	DDP_COMPONENT_OVL0,
 	DDP_COMPONENT_OVL_2L0,
@@ -300,6 +315,12 @@ static const struct mtk_mmsys_driver_data mt8188_vdosys0_driver_data = {
 	.min_height = 1,
 };
 
+static const struct mtk_mmsys_driver_data mt6893_mmsys_driver_data = {
+	.main_path = mt6893_mtk_ddp_main,
+	.main_len = ARRAY_SIZE(mt6893_mtk_ddp_main),
+	.mmsys_dev_num = 1,
+};
+
 static const struct mtk_mmsys_driver_data mt8192_mmsys_driver_data = {
 	.main_path = mt8192_mtk_ddp_main,
 	.main_len = ARRAY_SIZE(mt8192_mtk_ddp_main),
@@ -350,6 +371,8 @@ static const struct of_device_id mtk_drm_of_ids[] = {
 	  .data = &mt8188_vdosys0_driver_data},
 	{ .compatible = "mediatek,mt8188-vdosys1",
 	  .data = &mt8195_vdosys1_driver_data},
+	{ .compatible = "mediatek,mt6893-mmsys",
+	  .data = &mt6893_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8192-mmsys",
 	  .data = &mt8192_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8195-mmsys",
@@ -619,6 +642,14 @@ static int compare_dev(struct device *dev, void *data)
 	return dev == (struct device *)data;
 }
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+static void mtk_drm_debugfs_init(struct mtk_drm_private *private);
+static void mtk_drm_debugfs_cleanup(void);
+#else
+static inline void mtk_drm_debugfs_init(struct mtk_drm_private *private) { }
+static inline void mtk_drm_debugfs_cleanup(void) { }
+#endif
+
 static int mtk_drm_bind(struct device *dev)
 {
 	struct mtk_drm_private *private = dev_get_drvdata(dev);
@@ -658,15 +689,42 @@ static int mtk_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_free;
 
-	ret = aperture_remove_all_conflicting_devices(DRIVER_NAME);
-	if (ret < 0)
-		dev_err(dev, "Error %d while removing conflicting aperture devices", ret);
+	if (!mtk_drm_adopt_lk_display()) {
+		ret = aperture_remove_all_conflicting_devices(DRIVER_NAME);
+		if (ret < 0)
+			dev_err(dev, "Error %d while removing conflicting aperture devices", ret);
+	} else {
+		/*
+		 * Keep simplefb: it is the /dev/fb0 that maps the bootloader's
+		 * framebuffer (0x78e0c000), and LK's pipeline is scanning it.
+		 */
+		dev_info(drm->dev, "adopt mode: keeping simplefb as the console/fb0\n");
+	}
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
 		goto err_deinit;
 
-	drm_client_setup(drm, NULL);
+	/*
+	 * Plan A: do NOT register a DRM fbdev client.  Registering one makes fbcon
+	 * tear the console away from simplefb ("Console: switching to colour dummy
+	 * device 80x25") and from that moment nothing paints into the framebuffer
+	 * the bootloader's pipeline scans, i.e. the screen goes black - which is
+	 * exactly what the logs showed, twice.
+	 *
+	 * With the client left out, /dev/fb0 stays the simplefb of LK's own
+	 * framebuffer (0x78e0c000), so drawing into /dev/fb0 puts pixels straight on
+	 * screen through LK's untouched DDP/DSI/DSC pipeline, while the DRM device
+	 * still binds and owns the display for the work that follows.
+	 */
+	if (mtk_drm_adopt_lk_display())
+		dev_info(drm->dev, "adopt mode: no DRM fbdev client, simplefb stays /dev/fb0\n");
+	if (mtk_drm_adopt_lk_display())
+		mtk_crtc_adopt_start_copy();
+	else
+		drm_client_setup(drm, NULL);
+
+	mtk_drm_debugfs_init(private);
 
 	return 0;
 
@@ -693,10 +751,284 @@ static void mtk_drm_unbind(struct device *dev)
 		drm_dev_put(private->drm);
 		put_device(private->mutex_dev);
 	}
+	mtk_drm_debugfs_cleanup();
+
 	private->mtk_drm_bound = false;
 	private->drm_master = false;
 	private->drm = NULL;
 }
+
+/*
+ * Display register dump.
+ *
+ * arm64 has no usable /dev/mem, so without this there is no way to see what the
+ * hardware actually got: the MMSYS routing registers this port writes by hand
+ * (the whole point - a wrong mask there is invisible otherwise), the mutex
+ * state, and the first registers plus a few high offsets of every component in
+ * the CRTC path (OVL layer addresses, RDMA memory start, DSI start/status and
+ * the horizontal/vertical timing word counts).
+ *
+ * The file is created when the DRM master binds, i.e. when every component has
+ * probed and the display power domain is up, and removed on unbind.
+ */
+/*
+ * The MMSYS routing/clock-gate registers this port programs by hand.  They are
+ * shared between the debugfs dump and the one-shot read-back logged when a CRTC
+ * comes up (a wrong mask here is otherwise invisible).
+ */
+static const u32 mtk_drm_dump_mmsys[] = {
+	0x100,					/* MMSYS_CG_CON0 */
+	0x140,					/* SW0_RST_B */
+	0x650, 0x658, 0xeb4,			/* AAL0_SEL_IN / COLOR0_OUT_SEL_IN / CCORR0_SOUT_SEL */
+	0xf34, 0xf38, 0xf3c, 0xf40,		/* RDMA0 in/out muxes */
+	0xf48, 0xf4c, 0xf50, 0xf54,		/* DSC_WRAP / MMSYS_OVL_CON / DITHER0 / DSI0 */
+	0xf68, 0xf6c, 0xf70, 0xf74,		/* OVL0_2L BGOUT / OVL0 blendout chain */
+	0xf80, 0xff8,				/* DSI0 DSC input / PQ0_SOUT */
+};
+
+/*
+ * Read the routing registers back right after the CRTC programmed its path.
+ * One short line in dmesg, no filesystem access needed - which matters because
+ * this board's only console is a 115200 baud USB gadget and arm64 has no usable
+ * /dev/mem.
+ */
+void mtk_drm_log_mmsys_routes(struct device *dev, struct device *mmsys_dev)
+{
+	struct resource res;
+	void __iomem *base;
+	unsigned int i;
+
+	if (!mmsys_dev || !mmsys_dev->of_node ||
+	    of_address_to_resource(mmsys_dev->of_node, 0, &res))
+		return;
+
+	base = ioremap(res.start, resource_size(&res));
+	if (!base)
+		return;
+
+	dev_info(dev, "mmsys routes read back:");
+	for (i = 0; i < ARRAY_SIZE(mtk_drm_dump_mmsys); i++) {
+		u32 off = mtk_drm_dump_mmsys[i];
+
+		pr_cont(" %x=%x", off, readl(base + off));
+	}
+	pr_cont("\n");
+	iounmap(base);
+}
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+static struct dentry *mtk_drm_debugfs_dir;
+
+static const u32 mtk_drm_dump_mutex[] = {
+	0x020, 0x024, 0x028, 0x02c, 0x030,	/* EN / MUTEX0 / RST / SOF / MOD */
+};
+
+static const u32 mtk_drm_dump_ovl[] = {
+	0x0f40, 0x0f44, 0x0f48,			/* layer 0 addr / hdr addr / pitch */
+	0x0f60, 0x0f64, 0x0f68,			/* layer 1 */
+};
+
+static const u32 mtk_drm_dump_rdma[] = {
+	0x024, 0x02c, 0x040, 0x0f00,		/* MEM_CON / SRC_PITCH / FIFO_CON / MEM_START */
+};
+
+static const u32 mtk_drm_dump_dsi[] = {
+	0x038, 0x040, 0x044, 0x048,		/* SIZE_CON / HSA_WC / HBP_WC / HFP_WC */
+	0x050, 0x054, 0x05c, 0x068,		/* PHY LCCON / LD0CON / BLLP_WC / ... */
+};
+
+/*
+ * Every line carries the block tag so that a single register can be pulled out
+ * of the dump over a slow serial console, e.g.
+ *     grep mmsys /sys/kernel/debug/mediatek-drm/disp-regs
+ *     grep dsi0  /sys/kernel/debug/mediatek-drm/disp-regs
+ */
+static void mtk_drm_dump_block(struct seq_file *s, const char *tag,
+			       const char *name, struct device_node *np,
+			       const u32 *extra, unsigned int extra_nr)
+{
+	struct resource res;
+	void __iomem *base;
+	unsigned int i;
+
+	if (!np) {
+		seq_printf(s, "%-7s %s: (no device node)\n", tag, name);
+		return;
+	}
+	if (of_address_to_resource(np, 0, &res)) {
+		seq_printf(s, "%-7s %s: (no reg)\n", tag, name);
+		return;
+	}
+
+	base = ioremap(res.start, resource_size(&res));
+	if (!base) {
+		seq_printf(s, "%-7s %s: (ioremap failed)\n", tag, name);
+		return;
+	}
+
+	seq_printf(s, "%-7s %s @%pa\n", tag, name, &res.start);
+	for (i = 0; i < 0x40; i += 4)
+		seq_printf(s, "%-7s   +0x%03x = 0x%08x\n", tag, i,
+			   readl(base + i));
+	for (i = 0; i < extra_nr; i++)
+		seq_printf(s, "%-7s   +0x%03x = 0x%08x\n", tag, extra[i],
+			   readl(base + extra[i]));
+	iounmap(base);
+}
+
+/*
+ * The DSC wrap block is not part of this driver's component list - the
+ * bootloader programs it and (in adopt mode) keeps running it, which is exactly
+ * why its registers are the golden reference for implementing DSC ourselves.
+ * Dump it by fixed address, PPS included, because there is no DT node for it in
+ * this board tree yet.
+ */
+#define MTK_MT6893_DSC_WRAP_BASE	0x14124000
+#define MTK_DSC_PPS0			0x80
+
+static void mtk_drm_dump_dsc_wrap(struct seq_file *s)
+{
+	static const u32 regs[] = {
+		0x00,	/* CON: DSC_EN / DSC_BYPASS / UFOE_SEL */
+		0x18, 0x1c, 0x20, 0x24,		/* PIC_W PIC_H SLICE_W SLICE_H */
+		0x28, 0x2c, 0x30, 0x34,		/* CHUNK BUF MODE CFG */
+		0x38, 0x3c, 0x70, 0x200,	/* PAD ENC_WIDTH OBUF SHADOW */
+	};
+	void __iomem *base = ioremap(MTK_MT6893_DSC_WRAP_BASE, 0x400);
+	unsigned int i;
+
+	if (!base) {
+		seq_puts(s, "dsc0    (ioremap failed)\n");
+		return;
+	}
+
+	seq_printf(s, "dsc0    dsc_wrap @0x%08x\n", MTK_MT6893_DSC_WRAP_BASE);
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		seq_printf(s, "dsc0      +0x%03x = 0x%08x\n", regs[i],
+			   readl(base + regs[i]));
+	for (i = 0; i < 20; i++)
+		seq_printf(s, "dsc0      PPS%02u   = 0x%08x\n", i,
+			   readl(base + MTK_DSC_PPS0 + i * 4));
+
+	iounmap(base);
+}
+
+static int mtk_drm_regs_show(struct seq_file *s, void *data)
+{
+	struct mtk_drm_private *private = s->private;
+	const struct mtk_mmsys_driver_data *drv = private->data;
+	unsigned int i;
+
+	if (private->mmsys_dev)
+		mtk_drm_dump_block(s, "mmsys", "mmsys",
+				   private->mmsys_dev->of_node,
+				   mtk_drm_dump_mmsys,
+				   ARRAY_SIZE(mtk_drm_dump_mmsys));
+	if (private->mutex_node)
+		mtk_drm_dump_block(s, "mutex", "mutex",
+				   private->mutex_node,
+				   mtk_drm_dump_mutex,
+				   ARRAY_SIZE(mtk_drm_dump_mutex));
+
+	if (!drv || !drv->main_path)
+		return 0;
+
+	mtk_drm_dump_dsc_wrap(s);
+
+	for (i = 0; i < drv->main_len; i++) {
+		unsigned int id = drv->main_path[i];
+		struct device_node *np = private->comp_node[id];
+		const u32 *extra = NULL;
+		const char *tag;
+		unsigned int nr = 0;
+
+		switch (id) {
+		case DDP_COMPONENT_OVL0:
+		case DDP_COMPONENT_OVL_2L0:
+			extra = mtk_drm_dump_ovl;
+			nr = ARRAY_SIZE(mtk_drm_dump_ovl);
+			break;
+		case DDP_COMPONENT_RDMA0:
+			extra = mtk_drm_dump_rdma;
+			nr = ARRAY_SIZE(mtk_drm_dump_rdma);
+			break;
+		case DDP_COMPONENT_DSI0:
+			extra = mtk_drm_dump_dsi;
+			nr = ARRAY_SIZE(mtk_drm_dump_dsi);
+			break;
+		default:
+			break;
+		}
+
+		switch (id) {
+		case DDP_COMPONENT_OVL0:
+			tag = "ovl0";
+			break;
+		case DDP_COMPONENT_RDMA0:
+			tag = "rdma0";
+			break;
+		case DDP_COMPONENT_COLOR0:
+			tag = "color0";
+			break;
+		case DDP_COMPONENT_CCORR:
+			tag = "ccorr0";
+			break;
+		case DDP_COMPONENT_AAL0:
+			tag = "aal0";
+			break;
+		case DDP_COMPONENT_GAMMA:
+			tag = "gamma0";
+			break;
+		case DDP_COMPONENT_POSTMASK0:
+			tag = "postm0";
+			break;
+		case DDP_COMPONENT_DITHER0:
+			tag = "dither0";
+			break;
+		case DDP_COMPONENT_DSI0:
+			tag = "dsi0";
+			break;
+		default:
+			tag = "comp";
+			break;
+		}
+
+		mtk_drm_dump_block(s, tag, np ? np->full_name : "?", np,
+				   extra, nr);
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mtk_drm_regs);
+
+static void mtk_drm_debugfs_init(struct mtk_drm_private *private)
+{
+	struct dentry *de;
+
+	/*
+	 * Deliberately a single file in the debugfs root: creating a
+	 * subdirectory turned out to be unreliable here (the file was reported
+	 * missing on the device), and one file is all we need.  The outcome is
+	 * logged so the next boot says whether it worked.
+	 */
+	de = debugfs_create_file("mediatek-drm-regs", 0444, NULL, private,
+				 &mtk_drm_regs_fops);
+	if (IS_ERR(de)) {
+		dev_warn(private->dev, "no register dump: %ld\n", PTR_ERR(de));
+		return;
+	}
+
+	mtk_drm_debugfs_dir = de;
+	dev_info(private->dev,
+		 "register dump: cat /sys/kernel/debug/mediatek-drm-regs\n");
+}
+
+static void mtk_drm_debugfs_cleanup(void)
+{
+	debugfs_remove_recursive(mtk_drm_debugfs_dir);
+	mtk_drm_debugfs_dir = NULL;
+}
+#endif
 
 static const struct component_master_ops mtk_drm_ops = {
 	.bind		= mtk_drm_bind,
@@ -753,6 +1085,8 @@ static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
 	{ .compatible = "mediatek,mt8186-disp-mutex",
 	  .data = (void *)MTK_DISP_MUTEX },
 	{ .compatible = "mediatek,mt8188-disp-mutex",
+	  .data = (void *)MTK_DISP_MUTEX },
+	{ .compatible = "mediatek,mt6893-disp-mutex",
 	  .data = (void *)MTK_DISP_MUTEX },
 	{ .compatible = "mediatek,mt8192-disp-mutex",
 	  .data = (void *)MTK_DISP_MUTEX },
@@ -825,6 +1159,8 @@ static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
 	{ .compatible = "mediatek,mt8183-dsi",
 	  .data = (void *)MTK_DSI },
 	{ .compatible = "mediatek,mt8186-dsi",
+	  .data = (void *)MTK_DSI },
+	{ .compatible = "mediatek,mt6893-dsi",
 	  .data = (void *)MTK_DSI },
 	{ .compatible = "mediatek,mt8188-dsi",
 	  .data = (void *)MTK_DSI },
@@ -1051,6 +1387,11 @@ static int mtk_drm_of_ddp_path_build(struct device *dev, struct device_node *nod
 	}
 
 	return 0;
+}
+
+bool mtk_drm_adopt_lk_display(void)
+{
+	return true;
 }
 
 static int mtk_drm_probe(struct platform_device *pdev)

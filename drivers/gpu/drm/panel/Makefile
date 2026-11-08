@@ -1,3 +1,5 @@
+# the vendor panel driver includes the v2 stack headers by bare name
+ccflags-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += -I$(srctree)/drivers/gpu/drm/mediatek/mediatek_v2 -I$(srctree)/drivers/gpu/drm/mediatek/mediatek_v2/mi_disp
 # SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_DRM_PANEL_ABT_Y030XX067A) += panel-abt-y030xx067a.o
 obj-$(CONFIG_DRM_PANEL_ANBERNIC_TD4310) += panel-anbernic-td4310.o
@@ -137,3 +139,8 @@ obj-$(CONFIG_DRM_PANEL_VISIONOX_VTDR6130) += panel-visionox-vtdr6130.o
 obj-$(CONFIG_DRM_PANEL_VISIONOX_R66451) += panel-visionox-r66451.o
 obj-$(CONFIG_DRM_PANEL_WIDECHIPS_WS2401) += panel-widechips-ws2401.o
 obj-$(CONFIG_DRM_PANEL_XINPENG_XPP055C272) += panel-xinpeng-xpp055c272.o
+obj-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += panel-k10a-bringup.o
+ccflags-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += -I$(srctree)/drivers/misc/mediatek/mtk-interconnect -I$(srctree)/drivers/misc/mediatek/include -I$(srctree)/drivers/misc/mediatek/include/mt-plat -I$(srctree)/drivers/misc/mediatek/mmp -I$(srctree)/drivers/misc/mediatek/smi -I$(srctree)/drivers/misc/mediatek/smi/mt6873
+ccflags-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += -I$(srctree)/drivers/misc/mediatek/slbc -I$(srctree)/drivers/misc/mediatek/iommu -I$(srctree)/drivers/misc/mediatek/mminfra -I$(srctree)/drivers/misc/mediatek/cmdq/mailbox -I$(srctree)/drivers/misc/mediatek/vcp/include -I$(srctree)/drivers/misc/mediatek/base/power/include
+obj-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += leds-ktz8863a.o
+obj-$(CONFIG_DRM_PANEL_K10A_36_02_0A) += leds-lm36273.o

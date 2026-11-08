@@ -22,6 +22,9 @@
 
 #include "mtk_crtc.h"
 #include "mtk_ddp_comp.h"
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_dma_helper.h>
+#include "mtk_disp_trace.h"
 #include "mtk_drm_drv.h"
 #include "mtk_plane.h"
 
@@ -340,6 +343,22 @@ ddp_cmdq_cb_out:
 
 static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 {
+	/*
+	 * Plan A, third step: with the bootloader's picture already on screen
+	 * (visible through simplefb), programming the DDP path is what turns the
+	 * panel black - we rewrite MMSYS routes, reconfigure/re-start the path
+	 * components and rewrite the mutex, none of which match what LK set up
+	 * (LK composes through OVL0_2L, this path uses OVL0).
+	 *
+	 * So in adopt mode we do not touch the DDP at all: the only writes this
+	 * driver makes are the framebuffer mirror into LK's OVL0_2L layers, so
+	 * LK's running pipeline scans our framebuffer and nothing else changes.
+	 */
+	if (mtk_drm_adopt_lk_display()) {
+		mtk_disp_trace("crtc hw_init: adopt mode, leaving the bootloader's DDP untouched");
+		return 0;
+	}
+
 	struct drm_crtc *crtc = &mtk_crtc->base;
 	struct drm_connector *connector;
 	struct drm_encoder *encoder;
@@ -422,13 +441,28 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 
 		plane_state = to_mtk_plane_state(plane->state);
 
-		/* should not enable layer before crtc enabled */
-		plane_state->pending.enable = false;
+		/*
+		 * Do NOT blank the plane here.
+		 *
+		 * drm_atomic_helper_commit_tail() runs commit_planes() before
+		 * commit_modeset_enables(), so by the time this runs the plane's
+		 * pending state already carries the framebuffer that is about to
+		 * be scanned out (address, pitch, format).  Blanking it left the
+		 * OVL/RDMA layer addresses at zero (register dump: ovl0 +0x0f40
+		 * = 0, rdma0 +0x0f00 = 0) - and an RDMA fetching from address 0
+		 * never completes a frame, so it never raises its frame-end
+		 * interrupt and the commit whose flip-done DRM is waiting for
+		 * times out ("flip_done timed out" every 10 s), which in turn
+		 * keeps the next commit - the one that would have programmed the
+		 * real address - from ever running.  Black panel.
+		 */
 		comp = mtk_ddp_comp_for_plane(crtc, plane, &local_layer);
 		if (comp)
 			mtk_ddp_comp_layer_config(comp, local_layer,
 						  plane_state, NULL);
 	}
+
+	mtk_drm_log_mmsys_routes(crtc->dev->dev, mtk_crtc->mmsys_dev);
 
 	return 0;
 
@@ -482,6 +516,159 @@ static void mtk_crtc_ddp_hw_fini(struct mtk_crtc *mtk_crtc)
 	}
 }
 
+
+/*
+ * Plan A, second half.  The boot log gives the whole answer:
+ *
+ *   simple-framebuffer 78e0c000.framebuffer: framebuffer at 0x78e0c000
+ *   ... format=a8r8g8b8, mode=1080x2400x32, linelength=4352
+ *   Console: switching to colour dummy device 80x25      <- the screen goes black here
+ *
+ * i.e. LK's picture is scanned out of its framebuffer at 0x78e0c000 (inside the
+ * mblock-19-framebuffer reserved region) through its own DDP/DSI/DSC setup, and
+ * the screen only goes black when DRM's fbdev takes the console away from
+ * simplefb.  Rather than relocating a pipeline we do not control, copy our
+ * framebuffer's pixels into the one LK's pipeline already scans: no DDP, DSI,
+ * DSC or panel register is written at all.
+ */
+#define MTK_LK_FB_PHYS		0x78e0c000
+#define MTK_LK_FB_PITCH		4352
+#define MTK_LK_FB_DST_PITCH	4320
+#define MTK_LK_FB_W		1080
+#define MTK_LK_FB_H		2400
+#define MTK_ADOPT_COPY_MS	100
+
+static struct drm_framebuffer *adopt_fb;
+static void __iomem *lk_fb;
+static bool adopt_copied_once;
+static bool adopt_copy_once_done;
+static u32 adopt_last_sig;
+static struct delayed_work adopt_copy_work;
+static bool adopt_copy_started;
+
+static void mtk_crtc_adopt_copy_work(struct work_struct *work)
+{
+	/*
+	 * LK left the panel scanning one of the four ~10.4 MB frames inside the
+	 * mblock-19-framebuffer region (0x77a20000..0x7a1fffff):
+	 *
+	 *   0x77a20000 (region start, vendor "framebuffer" node)
+	 *   0x78416000 (what ovl0 layer 1 held in the register dump)
+	 *   0x78e0c000 (what LK's log reported last, and what simplefb uses -
+	 *               i.e. the buffer /dev/fb0 and fbpaint write into)
+	 *   0x79803000 (one more frame)
+	 *
+	 * The user can see simplefb's content on the panel but fbpaint's bars
+	 * never show, so the scanned frame is one of the others.  Copy the
+	 * simplefb frame into every other candidate, continuously, starting at
+	 * bind time - no atomic commit is ever issued in adopt mode (no fbdev
+	 * client), which is why the previous attempt never ran at all.
+	 */
+	static const phys_addr_t cand[] = {
+		0x77a20000, 0x78416000, 0x79803000,
+	};
+	void __iomem *src;
+	unsigned int y, i;
+	u32 sig = 0;
+
+	src = memremap(MTK_LK_FB_PHYS, MTK_LK_FB_PITCH * MTK_LK_FB_H,
+		       MEMREMAP_WB);
+	if (!src)
+		goto rearm;
+
+	/* cheap change detector: sample every 64th row */
+	for (y = 0; y < MTK_LK_FB_H; y += 64)
+		sig = sig * 31 + readl(src + y * MTK_LK_FB_PITCH);
+	if (sig == adopt_last_sig) {
+		memunmap(src);
+		goto rearm;
+	}
+	adopt_last_sig = sig;
+
+	for (i = 0; i < ARRAY_SIZE(cand); i++) {
+		void __iomem *dst = memremap(cand[i],
+					     MTK_LK_FB_PITCH * MTK_LK_FB_H,
+					     MEMREMAP_WC);
+
+		if (!dst)
+			continue;
+
+		/*
+		 * The frames LK's pipeline scans use pitch = width * 4 = 4320
+		 * (the vendor's mtk_crtc_fill_fb_para() does exactly that),
+		 * while simplefb's buffer - its own declared linelength - has
+		 * 4352 (1080 rounded up to 32 pixels, times 4).  Copying with the
+		 * source's pitch into a 4320-stride frame shifts every row by 8
+		 * pixels, which is precisely the diagonal hatching the panel
+		 * showed once the mirror started working.  Compact the rows.
+		 */
+		for (y = 0; y < MTK_LK_FB_H; y++)
+			memcpy(dst + y * MTK_LK_FB_DST_PITCH,
+			       src + y * MTK_LK_FB_PITCH,
+			       MTK_LK_FB_W * 4);
+		wmb();
+		memunmap(dst);
+
+		if (!adopt_copied_once)
+			mtk_disp_trace("copy: simplefb frame (4352) -> 0x%llx (4320) done",
+				       (unsigned long long)cand[i]);
+	}
+	memunmap(src);
+	if (!adopt_copied_once)
+		adopt_copied_once = true;
+
+rearm:
+	/*
+	 * Copy once, then stop.  Re-copying the 10 MB frame every 100 ms while the
+	 * display engine scans the very same memory makes it read a mix of old and
+	 * new pixels, which is the salt-and-pepper tearing the panel showed.  A
+	 * stable single copy both removes that and proves the mirror: whatever the
+	 * panel then displays is our framebuffer's content at bind time.  Making
+	 * updates live is the job of owning the pipeline (set the layer address
+	 * once and let fbcon draw straight into it), not of memcpy racing the
+	 * scan-out.
+	 */
+	/*
+	 * Keep the mirror alive but skip the copy when the source did not
+	 * change: re-copying 10 MB while the display scans the same memory
+	 * tears, and copying only on change keeps updates within 100 ms while
+	 * leaving the panel alone the rest of the time.
+	 */
+	schedule_delayed_work(&adopt_copy_work, msecs_to_jiffies(MTK_ADOPT_COPY_MS));
+}
+
+/* adopt mode issues no commit, so start the mirror at bind time instead */
+void mtk_crtc_adopt_start_copy(void)
+{
+	if (!adopt_copy_started) {
+		adopt_copy_started = true;
+		INIT_DELAYED_WORK(&adopt_copy_work, mtk_crtc_adopt_copy_work);
+		schedule_delayed_work(&adopt_copy_work,
+				      msecs_to_jiffies(MTK_ADOPT_COPY_MS));
+		pr_info("mtk-drm: adopt mode: mirroring simplefb into LK's other frames\n");
+	}
+}
+
+
+
+static void mtk_crtc_mirror_fb_to_lk_ovl(struct mtk_crtc *mtk_crtc)
+{
+	struct drm_plane *plane = &mtk_crtc->planes[0];
+
+	if (!plane->state || !plane->state->fb)
+		return;
+
+	adopt_fb = plane->state->fb;
+
+	if (!adopt_copy_started) {
+		adopt_copy_started = true;
+		INIT_DELAYED_WORK(&adopt_copy_work, mtk_crtc_adopt_copy_work);
+		schedule_delayed_work(&adopt_copy_work, msecs_to_jiffies(MTK_ADOPT_COPY_MS));
+		mtk_disp_trace("adopt: copying our fb into LK's framebuffer at 0x%x (pitch %u)",
+			       MTK_LK_FB_PHYS, MTK_LK_FB_PITCH);
+	}
+}
+
 static void mtk_crtc_ddp_config(struct drm_crtc *crtc,
 				struct cmdq_pkt *cmdq_handle)
 {
@@ -518,6 +705,12 @@ static void mtk_crtc_ddp_config(struct drm_crtc *crtc,
 
 			comp = mtk_ddp_comp_for_plane(crtc, plane, &local_layer);
 
+			mtk_disp_trace("crtc plane %u comp %u: addr=0x%llx pitch=%u en=%d fmt=0x%x",
+				       i, local_layer,
+				       (unsigned long long)plane_state->pending.addr,
+				       plane_state->pending.pitch,
+				       plane_state->pending.enable,
+				       plane_state->pending.format);
 			if (comp)
 				mtk_ddp_comp_layer_config(comp, local_layer,
 							  plane_state,
@@ -595,10 +788,54 @@ static void mtk_crtc_update_config(struct mtk_crtc *mtk_crtc, bool needs_vblank)
 	if (pending_async_planes)
 		mtk_crtc->pending_async_planes = true;
 
-	if (priv->data->shadow_register) {
-		mtk_mutex_acquire(mtk_crtc->mutex);
-		mtk_crtc_ddp_config(crtc, NULL);
-		mtk_mutex_release(mtk_crtc->mutex);
+	/*
+	 * Without shadow registers and without CMDQ this used to fall through and
+	 * write *nothing*: the layer registers were left to mtk_crtc_ddp_irq(),
+	 * i.e. to the frame-done interrupt, which cannot arrive before the layers
+	 * are configured.  Chicken and egg:
+	 *
+	 *   plane addr/pitch never programmed (dump: ovl0 +0x0f40 = 0,
+	 *   rdma0 +0x0f00 = 0) -> the RDMA fetches from address 0 and never
+	 *   completes a frame -> no frame-done interrupt (RDMA0 counter 0) ->
+	 *   mtk_crtc_ddp_irq() never runs -> the layers are never programmed and
+	 *   flip_done is never signalled ("flip_done timed out" every 10 s).
+	 *
+	 * Program the layers here instead, exactly like the shadow-register case
+	 * (and like the IRQ handler does once a frame does complete).  The DDP
+	 * hardware latches the registers at the next vblank, so this is safe.
+	 */
+	{
+		/*
+		 * Mirror mtk_crtc_ddp_irq()'s own condition exactly.  The
+		 * previous attempt at this put the "no CMDQ" half inside
+		 * #if IS_REACHABLE(CONFIG_MTK_CMDQ), which this build does not
+		 * set - so the preprocessor deleted it and nothing changed.
+		 */
+		bool configure_now;
+
+#if IS_REACHABLE(CONFIG_MTK_CMDQ)
+		configure_now = priv->data->shadow_register ||
+				!mtk_crtc->cmdq_client.chan;
+#else
+		configure_now = true;
+#endif
+		/*
+		 * No mtk_mutex_acquire() here: the IRQ handler does not take it
+		 * either, and taking it made every attempt fail
+		 * ("could not acquire mutex 0") because the mutex is already held
+		 * while the commit runs - leaving the writes unprotected *and*
+		 * logged as failures.  hw_lock already serialises this against
+		 * the IRQ path.
+		 */
+		/*
+		 * In adopt mode the only hardware we touch is LK's own OVL0_2L:
+		 * writing our OVL0 layers as well would clobber the layers the
+		 * bootloader is displaying through (its layer 1 read 0x78416000).
+		 */
+		if (configure_now && !mtk_drm_adopt_lk_display())
+			mtk_crtc_ddp_config(crtc, NULL);
+
+		mtk_crtc_mirror_fb_to_lk_ovl(mtk_crtc);
 	}
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
@@ -805,6 +1042,19 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 static void mtk_crtc_atomic_disable(struct drm_crtc *crtc,
 				    struct drm_atomic_commit *state)
 {
+	/*
+	 * Plan A: this driver did not enable the pipeline, so it must not disable
+	 * it either.  The register dump proved what the teardown does to the
+	 * bootloader's live DSC setup: ovl0 layer enables 0x1f -> 0x01 (LX's
+	 * visible layer 1 at 0x78416000 gets switched off), layer 0's address is
+	 * cleared, the mmsys routes are zeroed and mtk_dsi_poweroff() kills the
+	 * MIPI TX PLL (mipi_tx0_pll 834 MHz -> 0) - i.e. exactly the black screen.
+	 */
+	if (mtk_drm_adopt_lk_display()) {
+		mtk_disp_trace("crtc disable: adopt mode, leaving the bootloader's display running");
+		return;
+	}
+
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[0];
 	struct drm_device *dev = mtk_crtc->base.dev;
