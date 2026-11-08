@@ -806,8 +806,15 @@ static const unsigned int mt6893_pull_type[] = {
 	MTK_PULL_PU_PD_TYPE, /* 218 */		MTK_PULL_PU_PD_TYPE, /* 219 */
 };
 
+/*
+ * Register windows, in the order used by the "i_base" field of the pin
+ * register tables: the GPIO/pinctrl base followed by the seven IO
+ * configuration groups.  The tables index bases 0..7, and this order is the
+ * one the hardware uses (base, rm, bm, lm, lb, rt, lt, tm) - the same order as
+ * the vendor MT6885/MT6893 driver and as documented in the binding.
+ */
 static const char * const mt6893_pinctrl_register_base_name[] = {
-	"base", "rm", "bm", "bl", "br", "lm", "lb", "rt", "lt", "tl",
+	"base", "rm", "bm", "lm", "lb", "rt", "lt", "tm",
 };
 
 static const struct mtk_pin_reg_calc mt6893_reg_cals[PINCTRL_PIN_REG_MAX] = {

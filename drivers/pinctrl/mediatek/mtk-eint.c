@@ -22,6 +22,8 @@
 #include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
+#include <linux/slab.h>
 
 #include "mtk-eint.h"
 
@@ -317,6 +319,53 @@ static struct irq_chip mtk_eint_irq_chip = {
 	.irq_release_resources = mtk_eint_irq_release_resources,
 };
 
+/*
+ * Not every external interrupt belongs to the AP.  On MT6893 the sensor lines
+ * are owned by the SCP firmware (the ICM-40607 data-ready is EINT 12): the
+ * firmware programs them before Linux boots and then just waits for them.
+ * The mask-everything reset below would silently kill those lines, so a board
+ * can list them in "mediatek,eint-keep-unmasked" and they are unmasked again.
+ *
+ * This is also what the vendor kernel does, by simply never writing the mask
+ * registers at probe time.
+ */
+static void mtk_eint_keep_unmasked(struct mtk_eint *eint)
+{
+	static const char * const prop = "mediatek,eint-keep-unmasked";
+	struct device *dev = eint->dev;
+	u32 *eints;
+	int i, n;
+
+	n = device_property_count_u32(dev, prop);
+	if (n <= 0)
+		return;
+
+	eints = kcalloc(n, sizeof(*eints), GFP_KERNEL);
+	if (!eints)
+		return;
+
+	if (device_property_read_u32_array(dev, prop, eints, n)) {
+		kfree(eints);
+		return;
+	}
+
+	for (i = 0; i < n; i++) {
+		void __iomem *reg;
+
+		if (eints[i] >= eint->hw->ap_num) {
+			dev_warn(dev, "EINT %u out of range, not kept\n", eints[i]);
+			continue;
+		}
+
+		reg = mtk_eint_get_offset(eint, eints[i], eint->regs->mask_clr);
+		writel_relaxed(BIT(eint->pins[eints[i]].index % 32), reg);
+		dev_info(dev, "EINT %u left unmasked (owned by another core)\n",
+			 eints[i]);
+	}
+
+	kfree(eints);
+}
+
 static unsigned int mtk_eint_hw_init(struct mtk_eint *eint)
 {
 	void __iomem *dom_reg, *mask_reg;
@@ -332,6 +381,8 @@ static unsigned int mtk_eint_hw_init(struct mtk_eint *eint)
 			mask_reg += 4;
 		}
 	}
+
+	mtk_eint_keep_unmasked(eint);
 
 	return 0;
 }
@@ -436,6 +487,7 @@ EXPORT_SYMBOL_GPL(mtk_eint_do_suspend);
 int mtk_eint_do_resume(struct mtk_eint *eint)
 {
 	mtk_eint_chip_write_mask(eint, eint->cur_mask);
+	mtk_eint_keep_unmasked(eint);
 
 	return 0;
 }
