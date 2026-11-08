@@ -91,6 +91,38 @@
 #define MT8192_MUTEX_MOD_DISP_OVL2_2L		16
 #define MT8192_MUTEX_MOD_DISP_RDMA4		17
 
+/*
+ * MT6893 belongs to the MT6885 display generation.  The module bits come from
+ * the vendor kernel's mtk_drm_ddp.c (MT6885_MUTEX_MOD0_*), which is also what
+ * the vendor device tree of this very board is built against.
+ */
+#define MT6893_MUTEX_MOD_DISP_OVL0		0
+#define MT6893_MUTEX_MOD_DISP_OVL0_2L		1
+#define MT6893_MUTEX_MOD_DISP_RDMA0		2
+#define MT6893_MUTEX_MOD_DISP_WDMA0		3
+#define MT6893_MUTEX_MOD_DISP_COLOR0		4
+#define MT6893_MUTEX_MOD_DISP_CCORR0		5
+#define MT6893_MUTEX_MOD_DISP_AAL0		6
+#define MT6893_MUTEX_MOD_DISP_GAMMA0		7
+#define MT6893_MUTEX_MOD_DISP_DITHER0		8
+#define MT6893_MUTEX_MOD_DISP_DSI0		9
+#define MT6893_MUTEX_MOD_DISP_RSZ0		10
+#define MT6893_MUTEX_MOD_DISP_PWM0		11
+#define MT6893_MUTEX_MOD_DISP_OVL1		12
+#define MT6893_MUTEX_MOD_DISP_OVL1_2L		13
+#define MT6893_MUTEX_MOD_DISP_RDMA1		14
+#define MT6893_MUTEX_MOD_DISP_COLOR1		16
+#define MT6893_MUTEX_MOD_DISP_CCORR1		17
+#define MT6893_MUTEX_MOD_DISP_AAL1		18
+#define MT6893_MUTEX_MOD_DISP_GAMMA1		19
+#define MT6893_MUTEX_MOD_DISP_DITHER1		20
+#define MT6893_MUTEX_MOD_DISP_DSI1		21
+#define MT6893_MUTEX_MOD_DISP_POSTMASK0		25
+#define MT6893_MUTEX_MOD_DISP_POSTMASK1		26
+#define MT6893_MUTEX_MOD_DISP_MERGE0		27
+#define MT6893_MUTEX_MOD_DISP_MERGE1		28
+#define MT6893_MUTEX_MOD_DISP_DSC_WRAP0		29
+
 #define MT8183_MUTEX_MOD_DISP_RDMA0		0
 #define MT8183_MUTEX_MOD_DISP_RDMA1		1
 #define MT8183_MUTEX_MOD_DISP_OVL0		9
@@ -554,6 +586,31 @@ static const u8 mt8188_mdp_mutex_table_mod[MUTEX_MOD_IDX_MAX] = {
 	[MUTEX_MOD_IDX_MDP_WROT3] = MT8195_MUTEX_MOD_MDP_WROT3,
 };
 
+static const u8 mt6893_mutex_mod[DDP_COMPONENT_ID_MAX] = {
+	[DDP_COMPONENT_AAL0] = MT6893_MUTEX_MOD_DISP_AAL0,
+	[DDP_COMPONENT_AAL1] = MT6893_MUTEX_MOD_DISP_AAL1,
+	[DDP_COMPONENT_CCORR] = MT6893_MUTEX_MOD_DISP_CCORR0,
+	[DDP_COMPONENT_COLOR0] = MT6893_MUTEX_MOD_DISP_COLOR0,
+	[DDP_COMPONENT_COLOR1] = MT6893_MUTEX_MOD_DISP_COLOR1,
+	[DDP_COMPONENT_DITHER0] = MT6893_MUTEX_MOD_DISP_DITHER0,
+	[DDP_COMPONENT_DITHER1] = MT6893_MUTEX_MOD_DISP_DITHER1,
+	[DDP_COMPONENT_DSC0] = MT6893_MUTEX_MOD_DISP_DSC_WRAP0,
+	[DDP_COMPONENT_DSI0] = MT6893_MUTEX_MOD_DISP_DSI0,
+	[DDP_COMPONENT_DSI1] = MT6893_MUTEX_MOD_DISP_DSI1,
+	[DDP_COMPONENT_GAMMA] = MT6893_MUTEX_MOD_DISP_GAMMA0,
+	[DDP_COMPONENT_MERGE0] = MT6893_MUTEX_MOD_DISP_MERGE0,
+	[DDP_COMPONENT_MERGE1] = MT6893_MUTEX_MOD_DISP_MERGE1,
+	[DDP_COMPONENT_OVL0] = MT6893_MUTEX_MOD_DISP_OVL0,
+	[DDP_COMPONENT_OVL_2L0] = MT6893_MUTEX_MOD_DISP_OVL0_2L,
+	[DDP_COMPONENT_OVL_2L1] = MT6893_MUTEX_MOD_DISP_OVL1_2L,
+	[DDP_COMPONENT_OVL1] = MT6893_MUTEX_MOD_DISP_OVL1,
+	[DDP_COMPONENT_POSTMASK0] = MT6893_MUTEX_MOD_DISP_POSTMASK0,
+	[DDP_COMPONENT_PWM0] = MT6893_MUTEX_MOD_DISP_PWM0,
+	[DDP_COMPONENT_RDMA0] = MT6893_MUTEX_MOD_DISP_RDMA0,
+	[DDP_COMPONENT_RDMA1] = MT6893_MUTEX_MOD_DISP_RDMA1,
+	[DDP_COMPONENT_WDMA0] = MT6893_MUTEX_MOD_DISP_WDMA0,
+};
+
 static const u8 mt8192_mutex_mod[DDP_COMPONENT_ID_MAX] = {
 	[DDP_COMPONENT_AAL0] = MT8192_MUTEX_MOD_DISP_AAL0,
 	[DDP_COMPONENT_CCORR] = MT8192_MUTEX_MOD_DISP_CCORR0,
@@ -812,6 +869,20 @@ static const struct mtk_mutex_data mt8188_vpp_mutex_driver_data = {
 	.mutex_table_mod = mt8188_mdp_mutex_table_mod,
 };
 
+static const struct mtk_mutex_data mt6893_mutex_driver_data = {
+	.mutex_mod = mt6893_mutex_mod,
+	/*
+	 * The vendor driver programs MT6885_MUTEX_EOF_DSI0 = (SOF_DSI0 << 6)
+	 * along with the SOF source, which is exactly what the mt8183 table
+	 * provides.  Keep the DPI0 mapping of that table even though MT6893
+	 * has no DPI block wired up.
+	 */
+	.mutex_sof = mt8183_mutex_sof,
+	.mutex_mod_reg = MT8183_MUTEX0_MOD0,
+	.mutex_mod1_reg = MT8183_MUTEX0_MOD1,
+	.mutex_sof_reg = MT8183_MUTEX0_SOF0,
+};
+
 static const struct mtk_mutex_data mt8192_mutex_driver_data = {
 	.mutex_mod = mt8192_mutex_mod,
 	.mutex_sof = mt8183_mutex_sof,
@@ -982,6 +1053,13 @@ void mtk_mutex_enable(struct mtk_mutex *mutex)
 	WARN_ON(&mtx->mutex[mutex->id] != mutex);
 
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
+
+	dev_info(mtx->dev, "mutex %u enabled: EN=%x MOD=%x SOF=%x\n",
+		 mutex->id,
+		 readl(mtx->regs + DISP_REG_MUTEX_EN(mutex->id)),
+		 readl(mtx->regs + DISP_REG_MUTEX_MOD(mtx, mutex->id, mutex->id)),
+		 readl(mtx->regs +
+			DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id)));
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_enable);
 
@@ -1141,6 +1219,7 @@ static const struct of_device_id mutex_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8186-mdp3-mutex", .data = &mt8186_mdp_mutex_driver_data },
 	{ .compatible = "mediatek,mt8188-disp-mutex", .data = &mt8188_mutex_driver_data },
 	{ .compatible = "mediatek,mt8188-vpp-mutex",  .data = &mt8188_vpp_mutex_driver_data },
+	{ .compatible = "mediatek,mt6893-disp-mutex", .data = &mt6893_mutex_driver_data },
 	{ .compatible = "mediatek,mt8192-disp-mutex", .data = &mt8192_mutex_driver_data },
 	{ .compatible = "mediatek,mt8195-disp-mutex", .data = &mt8195_mutex_driver_data },
 	{ .compatible = "mediatek,mt8195-vpp-mutex",  .data = &mt8195_vpp_mutex_driver_data },

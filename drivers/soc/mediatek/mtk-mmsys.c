@@ -22,6 +22,7 @@
 #include "mt8192-mmsys.h"
 #include "mt8195-mmsys.h"
 #include "mt8365-mmsys.h"
+#include "mt6893-mmsys.h"
 
 #define MMSYS_SW_RESET_PER_REG 32
 
@@ -110,6 +111,12 @@ static const struct mtk_mmsys_driver_data mt8188_vppsys0_driver_data = {
 static const struct mtk_mmsys_driver_data mt8188_vppsys1_driver_data = {
 	.clk_driver = "clk-mt8188-vpp1",
 	.is_vppsys = true,
+};
+
+static const struct mtk_mmsys_driver_data mt6893_mmsys_driver_data = {
+	.clk_driver = "clk-mt6893-mm",
+	.routes = mmsys_mt6893_routing_table,
+	.num_routes = ARRAY_SIZE(mmsys_mt6893_routing_table),
 };
 
 static const struct mtk_mmsys_driver_data mt8192_mmsys_driver_data = {
@@ -394,6 +401,21 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 	struct mtk_mmsys *mmsys;
 	int ret;
 
+	/*
+	 * Skip the "mediatek-drm" child this driver creates below.  That child
+	 * inherits our of_node (so that mtk_drm_probe() finds its match_data)
+	 * and our memory resources, which means the platform bus matches
+	 * mtk_mmsys_drv against it too and the second
+	 * devm_platform_ioremap_resource() fails:
+	 *
+	 *   mtk-mmsys mediatek-drm.7.auto: error -EBUSY: can't request region
+	 *                                  for resource [mem 0x14116000-...]
+	 *
+	 * Only the device instantiated from the device tree has id -1.
+	 */
+	if (pdev->id != PLATFORM_DEVID_NONE)
+		return -ENODEV;
+
 	mmsys = devm_kzalloc(dev, sizeof(*mmsys), GFP_KERNEL);
 	if (!mmsys)
 		return -ENOMEM;
@@ -437,8 +459,44 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 	if (mmsys->data->is_vppsys)
 		goto out_probe_done;
 
-	drm = platform_device_register_data(&pdev->dev, "mediatek-drm",
-					    PLATFORM_DEVID_AUTO, NULL, 0);
+	/*
+	 * Create the DRM master explicitly instead of with
+	 * platform_device_register_data(): the v2 stack's mtk_drm_probe() calls
+	 * of_device_get_match_data(), so the child device must carry the mmsys
+	 * of_node (the parent's) - otherwise match_data is NULL and the probe
+	 * dereferences it.
+	 */
+	drm = platform_device_alloc("mediatek-drm", PLATFORM_DEVID_AUTO);
+	if (drm) {
+		/*
+		 * The master matches on the display compatible, which lives on the
+		 * dispsys_config node - not necessarily on the node this driver
+		 * bound to (the boot log showed the child inheriting "/dis0", which
+		 * carries no such compatible, so of_device_get_match_data() was 0
+		 * and mtk_drm_probe() dereferenced it).  Pick the node that really
+		 * has it and hand it to the child as its fwnode.
+		 */
+		struct device_node *np = pdev->dev.of_node;
+
+		if (!of_device_is_compatible(np, "mediatek,mt6893-disp")) {
+			struct device_node *alt =
+				of_find_compatible_node(NULL, NULL,
+							"mediatek,mt6893-disp");
+
+			if (alt)
+				np = alt;
+		}
+		drm->dev.parent = &pdev->dev;
+		device_set_node(&drm->dev, of_fwnode_handle(np));
+		/* the master ioremaps the mmsys windows: hand it our resources */
+		platform_device_add_resources(drm, pdev->resource, pdev->num_resources);
+		if (platform_device_add(drm)) {
+			platform_device_put(drm);
+			drm = ERR_PTR(-ENODEV);
+		}
+	} else {
+		drm = ERR_PTR(-ENOMEM);
+	}
 	if (IS_ERR(drm)) {
 		platform_device_unregister(clks);
 		return PTR_ERR(drm);
@@ -471,6 +529,7 @@ static const struct of_device_id of_match_mtk_mmsys[] = {
 	{ .compatible = "mediatek,mt8188-vdosys1", .data = &mt8188_vdosys1_driver_data },
 	{ .compatible = "mediatek,mt8188-vppsys0", .data = &mt8188_vppsys0_driver_data },
 	{ .compatible = "mediatek,mt8188-vppsys1", .data = &mt8188_vppsys1_driver_data },
+	{ .compatible = "mediatek,mt6893-mmsys", .data = &mt6893_mmsys_driver_data },
 	{ .compatible = "mediatek,mt8192-mmsys", .data = &mt8192_mmsys_driver_data },
 	/* "mediatek,mt8195-mmsys" compatible is deprecated */
 	{ .compatible = "mediatek,mt8195-mmsys", .data = &mt8195_vdosys0_driver_data },
