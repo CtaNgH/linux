@@ -59,8 +59,10 @@ static int wait_for_ip_sleep(struct ssusb_mtk *ssusb)
 		return 0;
 
 	/* wait for ip enter sleep mode */
+	/* chopin: give the IP 500 ms instead of 100 ms to settle; if it still
+	 * does not sleep the caller continues with USB powered. */
 	ret = readl_poll_timeout(ssusb->ippc_base + U3D_SSUSB_IP_PW_STS1, value,
-				 (value & SSUSB_IP_SLEEP_STS), 100, 100000);
+				 (value & SSUSB_IP_SLEEP_STS), 100, 500000);
 	if (ret) {
 		dev_err(ssusb->dev, "ip sleep failed!!!\n");
 		ret = -EBUSY;
@@ -539,8 +541,22 @@ static int mtu3_suspend_common(struct device *dev, pm_message_t msg)
 	}
 
 	ret = wait_for_ip_sleep(ssusb);
-	if (ret)
-		goto sleep_err;
+	if (ret) {
+		/*
+		 * chopin: the IP does not assert SSUSB_IP_SLEEP_STS while the
+		 * serial gadget is bound (mtu->softconnect stays 1 because
+		 * mtu3_dev_on_off() only writes the hardware pullup), so this
+		 * used to fail the *whole* system suspend with -EBUSY.
+		 *
+		 * Leave the PHY and clocks powered - that is a legal state, the
+		 * device simply keeps drawing USB power - and let the system
+		 * suspend proceed.  ip_awake_during_suspend tells the resume path
+		 * not to enable them a second time.
+		 */
+		dev_warn(dev, "IP did not sleep, keeping USB powered for system suspend\n");
+		ssusb->ip_awake_during_suspend = true;
+		return 0;
+	}
 
 	ssusb_phy_power_off(ssusb);
 	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
@@ -562,6 +578,14 @@ static int mtu3_resume_common(struct device *dev, pm_message_t msg)
 	dev_dbg(dev, "%s\n", __func__);
 
 	ssusb_wakeup_set(ssusb, false);
+
+	/* chopin: the clocks and PHY were never turned off, only the gadget was
+	 * suspended - just bring the ports back. */
+	if (ssusb->ip_awake_during_suspend) {
+		ssusb->ip_awake_during_suspend = false;
+		return resume_ip_and_ports(ssusb, msg);
+	}
+
 	ret = clk_bulk_prepare_enable(BULK_CLKS_CNT, ssusb->clks);
 	if (ret)
 		goto clks_err;

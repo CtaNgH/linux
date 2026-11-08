@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/usb/role.h>
 #include <linux/usb/tcpci.h>
 #include <linux/usb/tcpm.h>
 
@@ -125,6 +126,27 @@ static int mt6360_tcpc_init(struct tcpci *tcpci, struct tcpci_data *tdata)
 	if (ret)
 		return ret;
 
+	/*
+	 * chopin: two writes the vendor TCPC driver does and this one did not.
+	 *
+	 * TCPC_POWER_CTRL defaults with the bleed discharge enabled, which keeps
+	 * the CC pins loaded; the vendor sets 0x70 (bleed discharge off, auto
+	 * discharge disconnect on).  Without it the port reports a connection
+	 * (CC is detected, TCPM enters sink state) but no PD message ever
+	 * arrives, so there is never a contract and VBUS stays at 5 V.
+	 *
+	 * The LOOK4CONNECTION alert is what tells TCPM the partner is there at
+	 * all; the vendor unmasks it explicitly.
+	 */
+	ret = regmap_write(regmap, TCPC_POWER_CTRL, 0x70);
+	if (ret)
+		return ret;
+
+	ret = regmap_set_bits(regmap, TCPC_TCPC_CTRL,
+			      TCPC_TCPC_CTRL_EN_LK4CONN_ALRT);
+	if (ret)
+		return ret;
+
 	/* Set shipping mode off, AUTOIDLE on */
 	return regmap_write(regmap, MT6360_REG_MODECTRL2, 0x7A);
 }
@@ -158,6 +180,7 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 		return mti->irq;
 
 	mti->tdata.init = mt6360_tcpc_init;
+
 	mti->tcpci = tcpci_register_port(&pdev->dev, &mti->tdata);
 	if (IS_ERR(mti->tcpci)) {
 		dev_err(&pdev->dev, "Failed to register tcpci port\n");
@@ -170,6 +193,32 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 		dev_err(mti->dev, "Failed to register irq\n");
 		tcpci_unregister_port(mti->tcpci);
 		return ret;
+	}
+
+	/*
+	 * chopin: tcpci_i2c_probe() unmasks the alerts it registered after wiring
+	 * the IRQ up; this platform driver never did.  mt6360_tcpc_init() writes
+	 * TCPC_ALERT_MASK = 0 ("write all alert to masked"), so the mask stayed at
+	 * 0 and the TCPC never asserted PD_IRQB - which is exactly what the
+	 * hardware showed: ALERT = 0x01 pending, ALERT_MASK = 0x00, and zero
+	 * interrupts for the whole uptime.  Without alerts TCPM can do CC
+	 * detection (it polls) but never sees a PD Source_Capabilities, so
+	 * VBUS stays at 5 V.
+	 *
+	 * Unmask what tcpci_init() asks for.
+	 */
+	{
+		u16 mask = TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_FAILED |
+			   TCPC_ALERT_TX_DISCARDED | TCPC_ALERT_RX_STATUS |
+			   TCPC_ALERT_RX_HARD_RST | TCPC_ALERT_CC_STATUS;
+
+		ret = mti->tdata.regmap ? mt6360_tcpc_write16(mti->tdata.regmap,
+							TCPC_ALERT_MASK, mask) : -ENODEV;
+		if (ret) {
+			dev_err(mti->dev, "Failed to unmask alerts\n");
+			tcpci_unregister_port(mti->tcpci);
+			return ret;
+		}
 	}
 
 	device_init_wakeup(&pdev->dev, true);

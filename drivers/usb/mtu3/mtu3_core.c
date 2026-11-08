@@ -346,6 +346,15 @@ void mtu3_dev_on_off(struct mtu3 *mtu, int is_on)
 	else
 		mtu3_hs_softconn_set(mtu, is_on);
 
+	/*
+	 * chopin: keep the flag truthful.  It used to only write the hardware, so
+	 * after the soft disconnect done for system suspend softconnect stayed 1
+	 * and ssusb_gadget_ip_sleep_check() believed a connected gadget could
+	 * still let the IP sleep - wait_for_ip_sleep() then burned its timeout and
+	 * failed the whole system suspend with -EBUSY.
+	 */
+	mtu->softconnect = is_on;
+
 	dev_info(mtu->dev, "gadget (%s) pullup D%s\n",
 		usb_speed_string(mtu->speed), is_on ? "+" : "-");
 }
@@ -1041,9 +1050,13 @@ int ssusb_gadget_suspend(struct ssusb_mtk *ssusb, pm_message_t msg)
 	if (mtu->connected && PMSG_IS_AUTO(msg))
 		return -EBUSY;
 
-	/* Perform soft disconnect for system suspend */
-	if (mtu->softconnect && !PMSG_IS_AUTO(msg))
+	/* Perform soft disconnect for system suspend, remembering that the gadget
+	 * should be reconnected on resume - softconnect itself now tracks the
+	 * hardware, so it cannot be used for that decision. */
+	if (mtu->softconnect && !PMSG_IS_AUTO(msg)) {
+		mtu->softconnect_resume = true;
 		mtu3_dev_on_off(mtu, 0);
+	}
 
 	mtu3_dev_suspend(mtu);
 	synchronize_irq(mtu->irq);
@@ -1061,8 +1074,10 @@ int ssusb_gadget_resume(struct ssusb_mtk *ssusb, pm_message_t msg)
 	mtu3_dev_resume(mtu);
 
 	/* Restore soft connect for system resume */
-	if (mtu->softconnect && !PMSG_IS_AUTO(msg))
+	if (mtu->softconnect_resume && !PMSG_IS_AUTO(msg)) {
+		mtu->softconnect_resume = false;
 		mtu3_dev_on_off(mtu, 1);
+	}
 
 	return 0;
 }
