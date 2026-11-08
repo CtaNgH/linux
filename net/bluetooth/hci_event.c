@@ -704,14 +704,16 @@ static u8 hci_cc_read_local_version(struct hci_dev *hdev, void *data,
 	if (rp->status)
 		return rp->status;
 
-	if (hci_dev_test_flag(hdev, HCI_SETUP) ||
-	    hci_dev_test_flag(hdev, HCI_CONFIG)) {
-		hdev->hci_ver = rp->hci_ver;
-		hdev->hci_rev = __le16_to_cpu(rp->hci_rev);
-		hdev->lmp_ver = rp->lmp_ver;
-		hdev->manufacturer = __le16_to_cpu(rp->manufacturer);
-		hdev->lmp_subver = __le16_to_cpu(rp->lmp_subver);
-	}
+	/* Refresh unconditionally: the MTK connac controller behind BTIF
+	 * can answer this read after the setup/config flags have already
+	 * been cleared, which used to leave hci_ver/manufacturer at their
+	 * default values even though the controller reported 5.2/MediaTek.
+	 */
+	hdev->hci_ver = rp->hci_ver;
+	hdev->hci_rev = __le16_to_cpu(rp->hci_rev);
+	hdev->lmp_ver = rp->lmp_ver;
+	hdev->manufacturer = __le16_to_cpu(rp->manufacturer);
+	hdev->lmp_subver = __le16_to_cpu(rp->lmp_subver);
 
 	return rp->status;
 }
