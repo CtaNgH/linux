@@ -1947,8 +1947,6 @@ CONFIG_MTK_BOOT_PROGRESS_FB=y
 CONFIG_PHY_MTK_UFS=y
 CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI=y
 
-CONFIG_EXTRA_FIRMWARE="novatek_ts_fw02.bin novatek_ts_fw01.bin novatek_ts_fw.bin novatek_nt36672c_k10a_fw01.bin novatek_nt36672c_k10a_fw02.bin"
-CONFIG_EXTRA_FIRMWARE_DIR="firmware/novatek"
 
 # MT6893/chopin Wi-Fi: the downstream connectivity stack (conninfra +
 # CONNAC2X2 SOC3_0 fullmac).  Built in, together with cfg80211, because the
