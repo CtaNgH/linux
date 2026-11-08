@@ -1858,6 +1858,16 @@ config REGULATOR_VQMMC_IPQ4019
 	  This driver provides support for the VQMMC LDO I/0
 	  voltage regulator of the IPQ4019 SD/EMMC controller.
 
+
+config REGULATOR_WL2866D
+	tristate "WILL Semi WL2866D LDO regulators"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Four LDOs used for camera and display rails.  On the chopin board two
+	  WL2866D chips sit at the same address on i2c7 and i2c9, and the panel's
+	  DVDD is the first chip's LDO 1, programmed to 1.2 V.
+
 config REGULATOR_WM831X
 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
 	depends on MFD_WM831X
