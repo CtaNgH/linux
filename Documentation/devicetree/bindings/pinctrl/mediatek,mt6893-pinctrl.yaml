@@ -164,7 +164,7 @@ examples:
               <0x11ea0000 0x0200>,
               <0x11f20000 0x0200>,
               <0x11f30000 0x0200>,
-              <0x1100b000 0x1000>;
+              <0x1000b000 0x1000>;
         reg-names = "base", "rm", "bm", "lm", "lb", "rt",
                     "lt", "tm", "eint";
         gpio-controller;
