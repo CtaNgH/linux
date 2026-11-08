@@ -71,3 +71,6 @@ obj-y				+= keba/
 obj-y				+= amd-sbi/
 obj-$(CONFIG_MISC_RP1)		+= rp1/
 obj-$(CONFIG_INTEL_SSEI)	+= issei/
+obj-$(CONFIG_MTK_LOGSTORE_CONSOLE)	+= mtk-logstore-console.o
+obj-$(CONFIG_MTK_CMDQ_MBOX_EXT) += mediatek/
+obj-$(CONFIG_MTK_COMBO) += mediatek/

@@ -5,6 +5,57 @@
 
 menu "Misc devices"
 
+config MTK_LOGSTORE_CONSOLE
+	bool "MediaTek log_store console (boot log recovery via expdb)"
+	default n
+	help
+	  Say Y here to publish the kernel log into the bootloader's log_store
+	  ring in reserved DRAM (0x7ffbf000).  The preloader and LK relay that
+	  ring into the "expdb" partition on the next boot, which is the only
+	  way to read back a boot that dies before userspace on a device with
+	  neither pstore nor a serial console.
+
+	  The driver mirrors every formatted printk record into the ring as it
+	  is produced and registers an early console with CON_PRINTBUFFER, so
+	  the entire printk buffer ends up in the window LK relays.
+
+	  If unsure, say N.
+
+config MTK_LOGSTORE_SRAM_HEADER
+	bool "Touch the log_store SRAM header at 0x11df00"
+	depends on MTK_LOGSTORE_CONSOLE
+	default n
+	help
+	  Say Y here to have the driver read the log_store SRAM header and write
+	  the relay length back into it (dram_curlog_header.off_lk/sz_lk,
+	  dram_buf.buf_point and sram_log_header.reserve[0]).  That header is
+	  what tells LK how much of the ring to relay, so enabling it is what
+	  makes the high window useful.
+
+	  It is off by default because the SRAM block shares a bus with the
+	  always-on peripherals: on MT6893 a bad access there hangs the
+	  interconnect instead of faulting, and the symptom is a silent boot
+	  with no output at all.  The low window does not need the header.
+
+	  If unsure, say N.
+
+config MTK_BOOT_PROGRESS_FB
+	bool "Draw boot progress stripes on the framebuffer"
+	depends on MTK_LOGSTORE_CONSOLE
+	default y
+	help
+	  Say Y here to paint one 16-line stripe per boot stage directly into
+	  the two candidate framebuffer buffers at 0x78e0c000 and 0x77a20000.
+	  LK leaves the display controller scanning out its logo and nothing in
+	  the kernel reprograms it yet, so the stripes are visible immediately:
+	  a progress channel that needs neither storage nor a console.
+
+	  The colour says which buffer is live (green for 0x78e0c000, red for
+	  0x77a20000) and the number of stripes says how far the boot got.  The
+	  driver's own steps are drawn in yellow, two bands apart.
+
+	  Say N here to keep the kernel away from display memory.
+
 config SENSORS_LIS3LV02D
 	tristate
 	depends on INPUT
@@ -585,5 +636,6 @@ source "drivers/misc/mchp_pci1xxxx/Kconfig"
 source "drivers/misc/keba/Kconfig"
 source "drivers/misc/amd-sbi/Kconfig"
 source "drivers/misc/rp1/Kconfig"
+source "drivers/misc/mediatek/Kconfig"
 source "drivers/misc/issei/Kconfig"
 endmenu
