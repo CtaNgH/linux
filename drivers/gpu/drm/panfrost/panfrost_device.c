@@ -319,26 +319,35 @@ static const char * const chopin_mtcmos_names[7] = {
 	"mtcmos_mfg_core7_8",
 };
 
-static void chopin_mtcmos_on(struct panfrost_device *pfdev)
+static int chopin_mtcmos_get(struct panfrost_device *pfdev)
 {
 	struct device *dev = pfdev->base.dev;
 	int i;
 
 	if (!of_machine_is_compatible("mediatek,MT6893"))
-		return;
+		return 0;
 
 	for (i = 0; i < ARRAY_SIZE(chopin_mtcmos_names); i++) {
-		pfdev->mtcmos_clks[i] = devm_clk_get_optional(dev,
-							      chopin_mtcmos_names[i]);
-		if (IS_ERR(pfdev->mtcmos_clks[i])) {
-			dev_warn(dev, "mtcmos %s: %ld\n", chopin_mtcmos_names[i],
-				 PTR_ERR(pfdev->mtcmos_clks[i]));
-			pfdev->mtcmos_clks[i] = NULL;
-			continue;
-		}
+		struct clk *clk;
+
+		clk = devm_clk_get_optional(dev, chopin_mtcmos_names[i]);
+		if (IS_ERR(clk))
+			return dev_err_probe(dev, PTR_ERR(clk), "mtcmos %s\n",
+					     chopin_mtcmos_names[i]);
+
+		pfdev->mtcmos_clks[i] = clk;
+	}
+
+	return 0;
+}
+
+static void chopin_mtcmos_on(struct panfrost_device *pfdev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(pfdev->mtcmos_clks); i++)
 		if (pfdev->mtcmos_clks[i])
 			clk_prepare_enable(pfdev->mtcmos_clks[i]);
-	}
 }
 
 static void chopin_gpu_rails_on(struct device *dev)
@@ -429,6 +438,10 @@ static void chopin_mfg_axi_config(struct device *dev)
 int panfrost_device_init(struct panfrost_device *pfdev)
 {
 	int err;
+
+	err = chopin_mtcmos_get(pfdev);
+	if (err)
+		return err;
 
 	chopin_gpu_rails_on(pfdev->base.dev);
 	chopin_mtcmos_on(pfdev);
