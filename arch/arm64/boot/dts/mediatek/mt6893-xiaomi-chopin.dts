@@ -540,6 +540,21 @@
 			compatible = "mediatek,md_mem_usage";
 		};
 
+		/*
+		 * CHOPIN-EXPERIMENT (drop once LK's real mblock layout is known):
+		 * 237.25 MiB gap between the two md_mem_usage carve-outs.  The
+		 * pre-fix SWIOTLB bounce pool was allocated at
+		 * 0xf6850000..0xfa850000 (top 64 MiB of this gap) and the first
+		 * i2c/mt6360 DMA into it died with an asynchronous SError
+		 * (out/console-ramoops*.txt).  Reserve it so that the buddy
+		 * allocator can never hand these pages out.
+		 */
+		reserve-memory-md-gap {
+			reg = <0x0 0xebb10000 0x0 0xed40000>;
+			no-map;
+			compatible = "reserve-memory-md_mem_usage";
+		};
+
 		mblock-26-md_mem_usage {
 			reg = <0x0 0xe4000000 0x0 0x7b10000>;
 			no-map;

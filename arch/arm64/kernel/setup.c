@@ -279,6 +279,60 @@ u64 cpu_logical_map(unsigned int cpu)
 	return __cpu_logical_map[cpu];
 }
 
+/*
+ * CHOPIN-DIAG: dump the bootloader (LK) device tree /memory and
+ * /reserved-memory nodes before setup.c replaces them with the embedded board
+ * tree.  LK patches the real DRAM size and the runtime "mblock" carve-out
+ * layout into the tree it hands over; that information is lost when the
+ * embedded tree is installed, and it is exactly what the static
+ * reserved-memory nodes of mt6893-xiaomi-chopin.dts have to match.
+ */
+static int __init chopin_lk_dt_node(unsigned long node, const char *uname,
+				    int depth, void *data)
+{
+	static int rm_depth = -1;
+	const __be32 *reg;
+	const void *nomap;
+	const char *type;
+	int len, i;
+
+	/* left the reserved-memory subtree */
+	if (rm_depth >= 0 && depth <= rm_depth)
+		rm_depth = -1;
+
+	type = of_get_flat_dt_prop(node, "device_type", &len);
+	if (type && !strcmp(type, "memory")) {
+		reg = of_get_flat_dt_prop(node, "reg", &len);
+		pr_info("CHOPIN-LKDT: /%s reg:", uname);
+		for (i = 0; reg && i < len / 4; i++)
+			pr_cont(" %08x", be32_to_cpu(reg[i]));
+		pr_cont("\n");
+	}
+
+	if (!strcmp(uname, "reserved-memory")) {
+		rm_depth = depth;
+		return 0;
+	}
+
+	if (rm_depth >= 0) {
+		reg = of_get_flat_dt_prop(node, "reg", &len);
+		nomap = of_get_flat_dt_prop(node, "no-map", NULL);
+		pr_info("CHOPIN-LKDT: rm %s%s reg:", uname,
+			nomap ? " [no-map]" : "");
+		for (i = 0; reg && i < len / 4; i++)
+			pr_cont(" %08x", be32_to_cpu(reg[i]));
+		pr_cont("\n");
+	}
+
+	return 0;
+}
+
+static void __init chopin_dump_lk_dt(void)
+{
+	pr_info("CHOPIN-LKDT: bootloader tree (before override):\n");
+	of_scan_flat_dt(chopin_lk_dt_node, NULL);
+}
+
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
 	setup_initial_init_mm(_text, _etext, _edata, _end);
@@ -325,6 +379,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 		pr_info("CHOPIN-DTB: overriding LK FDT with embedded board tree (%d bytes)\n",
 			(int)(_binary_chopin_board_dtb_end -
 			      _binary_chopin_board_dtb_start));
+		chopin_dump_lk_dt();
 		/*
 		 * Verify rather than assign initial_boot_params directly: this
 		 * re-checks the header and, crucially, recomputes of_fdt_crc32.
