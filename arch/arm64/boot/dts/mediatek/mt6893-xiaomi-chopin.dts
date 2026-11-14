@@ -229,7 +229,6 @@
 		plat_dbg_info,base = <0x11d80c 0x11d88c 0x11d8a8>;
 		plat_dbg_info,key = <0xd8a3 0xe31c 0xdb45>;
 		plat_dbg_info,max = <0x03>;
-		bootargs = "console=tty0 console=ttyS0,921600n1 root=/dev/ram vmalloc=400M slub_debug=OFZPU swiotlb=noforce firmware_class.path=/vendor/firmware page_owner=on loop.max_part=7 has_battery_removed=0 loop.max_part=7 androidboot.boot_devices=bootdevice,soc/11230000.mmc,11230000.mmc,soc/11270000.ufshci,11270000.ufshci androidboot.rsc=cn panel_name=dsi_k10a_36_02_0a_dsc_vdo mtk_drm.panel_opt=0x46,0x36,0x32,0x01,0x4b,0x0a,0x31,0x00 WpAndMaxlum:0x7c,0x7d,0x56 ramoops.mem_address=0x48090000 ramoops.mem_size=0xe0000 ramoops.pmsg_size=0x10000 ramoops.console_size=0x40000 clk_ignore_unused bootopt=64S3,32N2,64N2 androidboot.serialconsole=0 root=/dev/ram androidboot.vbmeta.avb_version=1.2 androidboot.vbmeta.device_state=unlocked androidboot.veritymode=disabled androidboot.veritymode.managed=yes androidboot.slot_suffix=_a androidboot.slot=a androidboot.verifiedbootstate=orange androidboot.atm=disabled androidboot.force_normal_boot=1 androidboot.meta_log_disable=0 androidboot.tee_type=1 mtk_printk_ctrl.disable_uart=1 androidboot.bootreason=PowerKey androidboot.hwc=CN androidboot.hwlevel=MP androidboot.hwversion=1.9.0 androidboot.secureboot=1 androidboot.dp=3 androidboot.product.hardware.sku=chopin usb2jtag_mode=0 androidboot.dtb_idx=0 androidboot.dtbo_idx=0";
 		kaslr-seed = <0x0 0x0>;
 		phandle = <0xf3>;
 		atag,videolfb-fb_base_l = <0x7e020000>;
