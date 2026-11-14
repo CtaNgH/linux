@@ -39,7 +39,6 @@
 
 #include "nt36xxx.h"
 
-static bool nvt_invert_y;
 #ifndef NVT_SAVE_TESTDATA_IN_FILE
 #include "nt36xxx_mp_ctrlram.h"
 #endif
@@ -1008,8 +1007,6 @@ static int32_t nvt_parse_dt(struct device *dev)
 		NVT_LOG("config-array-size: %u\n", ts->config_array_size);
 	}
 
-	nvt_invert_y = of_property_read_bool(np, "novatek,invert-y");
-	NVT_LOG("novatek,invert-y=%d\n", nvt_invert_y);
 
 	ret = of_property_read_u32(np, "spi-max-frequency", &ts->spi_max_freq);
 	if (ret) {
@@ -1506,10 +1503,6 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 			input_x = (uint32_t)(point_data[position + 1] << 4) + (uint32_t) (point_data[position + 3] >> 4);
 			input_y = (uint32_t)(point_data[position + 2] << 4) + (uint32_t) (point_data[position + 3] & 0x0F);
-			/* This panel reports the right half with the opposite
-			 * Y direction; only flip that half. */
-			if (nvt_invert_y && input_x >= (ts->abs_x_max / 2))
-				input_y = ts->abs_y_max - input_y;
 			if ((input_x < 0) || (input_y < 0))
 				continue;
 			if ((input_x > ts->abs_x_max) || (input_y > ts->abs_y_max))

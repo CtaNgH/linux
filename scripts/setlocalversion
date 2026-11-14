@@ -32,6 +32,15 @@ if test $# -gt 0 -o ! -d "$srctree"; then
 	usage
 fi
 
+# chopin: allow the build to pin the release suffix.  The modules installed on
+# the device were built when the tree was at an older commit; pinning the
+# string keeps their vermagic valid while we iterate on DT / driver fixes and
+# only replace Image.gz + dtb in the boot image.
+if test -n "$CHOPIN_LOCALVERSION"; then
+	echo "$CHOPIN_LOCALVERSION"
+	exit 0
+fi
+
 try_tag() {
 	tag="$1"
 

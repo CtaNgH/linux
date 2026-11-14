@@ -546,6 +546,18 @@
 			no-map;
 			compatible = "mediatek,md_mem_usage";
 		};
+		/*
+		 * The 237.25 MiB between mblock-26 (ends 0xe9b10000) and mblock-27
+		 * (starts 0xf8850000) is not described by LK's mblock table, but the
+		 * first touch of pages from it aborts on the bus on this unit
+		 * (SError 0xbe000411 in clear_page). Keep it out of the buddy
+		 * allocator until the real owner is understood.
+		 */
+		chopin-md-usage-gap {
+			reg = <0x0 0xe9b10000 0x0 0xed40000>;
+			no-map;
+		};
+
 
 		mblock-25-md_mem_usage {
 			reg = <0x0 0xe1000000 0x0 0x150000>;
@@ -3496,7 +3508,6 @@
 			compatible = "novatek,NVT-ts-spi";
 			reg = <0x0>;
 			status = "ok";
-			novatek,invert-y;
 			spi-max-frequency = <0x927c00>;
 			spi-cs-setup-delay-ns = <0x7d0>;
 			spi-cs-hold-delay-ns = <0x7d0>;
