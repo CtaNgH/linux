@@ -517,13 +517,13 @@
 		};
 
 		mblock-30-mediatek,reserve-memory-adsp {
-			reg = <0x0 0x6c000000 0x0 0xe30000>;
+			reg = <0x0 0x6e000000 0x0 0xe30000>;
 			no-map;
 			compatible = "mediatek,mediatek,reserve-memory-adsp";
 		};
 
 		mblock-29-ap_md_c_smem {
-			reg = <0x0 0x6e000000 0x0 0x5560000>;
+			reg = <0x0 0x70000000 0x0 0x3560000>;
 			no-map;
 			compatible = "mediatek,ap_md_c_smem";
 		};
@@ -535,40 +535,26 @@
 		};
 
 		mblock-27-md_mem_usage {
-			reg = <0x0 0xfa850000 0x0 0x37b0000>;
+			reg = <0x0 0xf8850000 0x0 0x37b0000>;
 			no-map;
 			compatible = "mediatek,md_mem_usage";
 		};
 
-		/*
-		 * CHOPIN-EXPERIMENT (drop once LK's real mblock layout is known):
-		 * 237.25 MiB gap between the two md_mem_usage carve-outs.  The
-		 * pre-fix SWIOTLB bounce pool was allocated at
-		 * 0xf6850000..0xfa850000 (top 64 MiB of this gap) and the first
-		 * i2c/mt6360 DMA into it died with an asynchronous SError
-		 * (out/console-ramoops*.txt).  Reserve it so that the buddy
-		 * allocator can never hand these pages out.
-		 */
-		reserve-memory-md-gap {
-			reg = <0x0 0xebb10000 0x0 0xed40000>;
-			no-map;
-			compatible = "reserve-memory-md_mem_usage";
-		};
 
 		mblock-26-md_mem_usage {
-			reg = <0x0 0xe4000000 0x0 0x7b10000>;
+			reg = <0x0 0xe2000000 0x0 0x7b10000>;
 			no-map;
 			compatible = "mediatek,md_mem_usage";
 		};
 
 		mblock-25-md_mem_usage {
-			reg = <0x0 0xe3000000 0x0 0x150000>;
+			reg = <0x0 0xe1000000 0x0 0x150000>;
 			no-map;
 			compatible = "mediatek,md_mem_usage";
 		};
 
 		mblock-24-md_mem_usage {
-			reg = <0x0 0xe0000000 0x0 0x2090000>;
+			reg = <0x0 0xde000000 0x0 0x2090000>;
 			no-map;
 			compatible = "mediatek,md_mem_usage";
 		};
@@ -699,13 +685,13 @@
 		};
 
 		mblock-2-dramc-rk1 {
-			reg = <0x02 0x3ffff000 0x00 0x1000>;
+			reg = <0x01 0xbffff000 0x00 0x1000>;
 			no-map;
 			compatible = "mediatek,dramc-rk1";
 		};
 
 		mblock-1-dramc-rk0 {
-			reg = <0x01 0x3ffff000 0x00 0x1000>;
+			reg = <0x00 0xfffff000 0x00 0x1000>;
 			no-map;
 			compatible = "mediatek,dramc-rk0";
 		};
