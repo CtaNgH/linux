@@ -3,11 +3,21 @@
  * chopin: the USB controller that is used.
  */
 
+/*
+ * NOTE: this fragment is documentation only - the runtime board tree is
+ * arch/arm64/boot/dts/mediatek/mt6893.dtsi, which already carries these
+ * overrides.  Keep it in sync by hand.
+ *
+ * chopin: peripheral-only.  dr_mode = "otg" makes the mtu3 driver require
+ * the otg_vbus regulator (registered by the MT6360 charger on i2c5); when
+ * that probe fails the controller defers forever and the phone enumerates
+ * no USB device at all.  See the long comment in mt6893.dtsi.
+ */
 &{/usb@11201000} {
-	dr_mode = "otg";
-	usb-role-switch;
-	role-switch-default-mode = "peripheral";
-	vbus-supply = <&otg_vbus>;
+	dr_mode = "peripheral";
+	/delete-property/ usb-role-switch;
+	/delete-property/ role-switch-default-mode;
+	/delete-property/ vbus-supply;
 };
 
 /* ---- On-screen console on the framebuffer LK leaves scanning out ---- */

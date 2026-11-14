@@ -6182,13 +6182,35 @@
 		clocks = <&topckgen 0x7b &infracfg_ao 0x25 &infracfg_ao 0x3b>;
 		clock-names = "sys_ck", "ref_ck", "xhci_ck";
 		phys = <&u2port &mt6360_pmu>;
+		/*
+		 * chopin: otg mode, defaulting to the device role, but *without*
+		 * a vbus-supply.
+		 *
+		 * Two opposite requirements meet here:
+		 *
+		 *  - otg (not peripheral) is needed because only the dual-role
+		 *    path programs the IPPC u2 port mode: ssusb_set_mode(DEVICE)
+		 *    -> switch_port_to_device() + mtu3_start().  With
+		 *    dr_mode = "peripheral" the mtu3 driver never touches the
+		 *    port select, the UDC registers but the port is not switched
+		 *    to device mode and a bound gadget never connects (measured
+		 *    on hardware: gadget/lun kobjects exist, ttyGS0 exists,
+		 *    UDC state stays "not attached" forever).
+		 *
+		 *  - no vbus-supply, because get_ssusb_rscs() would otherwise
+		 *    wait for otg_vbus - a regulator registered by the MT6360
+		 *    charger on i2c5, which is flaky on this board.  Whenever the
+		 *    charger fails to probe, mtu3 defers forever and the phone
+		 *    enumerates nothing at all.  Without the property the
+		 *    regulator core hands out a dummy, which is exactly what a
+		 *    device-only port wants (ssusb_set_vbus() becomes a no-op).
+		 */
 		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "peripheral";
 		maximum-speed = "high-speed";
 		vusb33-supply = <&vusb33>;
 		status = "okay";
-		usb-role-switch;
-		role-switch-default-mode = "peripheral";
-		vbus-supply = <&otg_vbus>;
 		phandle = <0xf2>;
 
 		usb@0 {

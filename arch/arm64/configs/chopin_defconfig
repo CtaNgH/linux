@@ -87,7 +87,7 @@ CONFIG_ARCH_ZYNQMP=y
 CONFIG_NUMA=y
 CONFIG_XEN=y
 CONFIG_COMPAT=y
-CONFIG_CMDLINE="console=tty0 swiotlb=0 iommu.passthrough=1 clk_ignore_unused regulator_ignore_unused pd_ignore_unused ignore_loglevel panic=0 printk.devkmsg=on chopinport=v2onehundredfifth log_buf_len=4194304 pstore.kmsg_bytes=262144 ramoops.mem_address=0x48090000 ramoops.mem_size=0x8f000 ramoops.record_size=0x1000 ramoops.console_size=0x40000 ramoops.ftrace_size=0 ramoops.pmsg_size=0"
+CONFIG_CMDLINE="console=tty0 swiotlb=0 iommu.passthrough=1 clk_ignore_unused regulator_ignore_unused pd_ignore_unused loglevel=4 panic=0 printk.devkmsg=on chopinport=v2onehundredfifth log_buf_len=4194304 pstore.kmsg_bytes=262144 ramoops.mem_address=0x48090000 ramoops.mem_size=0x8f000 ramoops.record_size=0x1000 ramoops.console_size=0x40000 ramoops.ftrace_size=0 ramoops.pmsg_size=0"
 CONFIG_CMDLINE_FORCE=y
 CONFIG_HIBERNATION=y
 CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
@@ -1220,7 +1220,9 @@ CONFIG_USB_ONBOARD_DEV_USB5744=y
 CONFIG_NOP_USB_XCEIV=y
 CONFIG_USB_MXS_PHY=m
 CONFIG_USB_GADGET=y
-CONFIG_USB_G_SERIAL=y
+CONFIG_USB_G_SERIAL=n
+CONFIG_USB_G_MULTI=y
+CONFIG_USB_G_MULTI_RNDIS=y
 CONFIG_USB_RENESAS_USBHS_UDC=m
 CONFIG_USB_RZV2M_USB3DRD=y
 CONFIG_USB_RENESAS_USB3=m

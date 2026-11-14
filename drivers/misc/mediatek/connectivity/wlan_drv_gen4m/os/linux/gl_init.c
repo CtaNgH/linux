@@ -2475,7 +2475,14 @@ static int wlanLoadNvramFirmware(struct device *dev)
 	if (g_NvramFsm == NVRAM_STATE_READY)
 		return 0;
 
-	ret = request_firmware(&fw, CHOPIN_WIFI_NVRAM_FW, dev);
+	/*
+	 * chopin: quiet load.  The blob lives in /lib/firmware only once the
+	 * system has mounted nvdata, so an early probe is *expected* to miss
+	 * it; the plain request_firmware() logs a KERN_ERR for every miss,
+	 * which floods the framebuffer console.  Failures are reported by the
+	 * deferred work below, once, at debug level.
+	 */
+	ret = firmware_request_nowarn(&fw, CHOPIN_WIFI_NVRAM_FW, dev);
 	if (ret) {
 		/* Quiet on the defer/retry path; the caller logs progress. */
 		pr_debug("CHOPIN-NVRAM: request '%s' failed: %d\n",
@@ -2522,8 +2529,12 @@ extern int mtk_wcn_wlan_func_ctrl(enum xaga_wlan_opid opId);
 
 static struct delayed_work wlan_nvram_defer_work;
 static struct device *wlan_nvram_dev;
-#define CHOPIN_NVRAM_RETRY_MS 250
-#define CHOPIN_NVRAM_MAX_RETRIES 480 /* ~120s */
+#define CHOPIN_NVRAM_RETRY_MS 500
+/* chopin: 60 x 500ms = 30s.  Long enough for a root filesystem to show up
+ * with the blob, short enough that a system without WiFi firmware stops
+ * touching the console for the rest of the boot.
+ */
+#define CHOPIN_NVRAM_MAX_RETRIES 60
 #define CHOPIN_PWRON_RETRY_MS 3000
 #define CHOPIN_PWRON_MAX_RETRIES 3
 
@@ -2568,14 +2579,14 @@ static void wlan_nvram_deferred_poweron(struct work_struct *work)
 	ret = wlanLoadNvramFirmware(wlan_nvram_dev);
 	if (ret) {
 		if (retries++ < CHOPIN_NVRAM_MAX_RETRIES) {
-			pr_info_ratelimited(
-				"CHOPIN-NVRAM: not available yet (%d), retrying\n",
-				ret);
+			/* chopin: no per-retry console output. */
+			pr_debug("CHOPIN-NVRAM: not available yet (%d), retry %d/%d\n",
+				 ret, retries, CHOPIN_NVRAM_MAX_RETRIES);
 			schedule_delayed_work(&wlan_nvram_defer_work,
 					       msecs_to_jiffies(CHOPIN_NVRAM_RETRY_MS));
 		} else {
-			pr_err("CHOPIN-NVRAM: giving up after %d retries\n",
-			       retries);
+			pr_debug("CHOPIN-NVRAM: giving up after %d retries\n",
+				 retries);
 		}
 		return;
 	}
@@ -6022,8 +6033,8 @@ static int initWlan(void)
 	 */
 	ret = wlanLoadNvramFirmware(prGlueInfo->prDev);
 	if (ret)
-		pr_warn("CHOPIN-NVRAM: '%s' not available yet (%d), deferring\n",
-			CHOPIN_WIFI_NVRAM_FW, ret);
+		pr_debug("CHOPIN-NVRAM: '%s' not available yet (%d), deferring\n",
+			 CHOPIN_WIFI_NVRAM_FW, ret);
 
 	gPrDev = NULL;
 
@@ -6080,7 +6091,7 @@ static int initWlan(void)
 		wlan_power_on_or_retry();
 	} else {
 		/* Defer until initramfs /init copies the blob from nvdata. */
-		pr_info("CHOPIN-NVRAM: deferring WiFi power-on until blob appears\n");
+		pr_debug("CHOPIN-NVRAM: deferring WiFi power-on until blob appears\n");
 		wlan_schedule_deferred_poweron(prGlueInfo->prDev);
 	}
 

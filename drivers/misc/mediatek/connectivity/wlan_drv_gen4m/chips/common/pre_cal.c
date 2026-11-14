@@ -811,7 +811,12 @@ int wlanPreCalPwrOn(void)
  * never calibrated - the firmware scans but hears nothing.  Wait long
  * enough for the shell, and say so periodically instead of looking hung.
  */
-#define MAX_NVRAM_READY_COUNT 1200 /* 120 s */
+/* chopin: 1200 (120 s) made the conninfra pre-cal callback blow its 15 s
+ * timeout and dump a backtrace to the console on every boot, because this
+ * board's NVRAM blob only ever appears once userspace has mounted nvdata.
+ * No NVRAM means no pre-cal anyway - give it 5 s and fail quietly.
+ */
+#define MAX_NVRAM_READY_COUNT 50 /* 5 s */
 
 	int retryCount = 0;
 	void *pvData = NULL;
