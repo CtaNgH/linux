@@ -2245,12 +2245,25 @@ static void nvt_resume_work(struct work_struct *work)
 static void get_lockdown_info(struct work_struct *work)
 {
 	int ret = 0;
+	int retry;
 
 	NVT_LOG("lkdown_readed = %d", ts->lkdown_readed);
 	if (!ts->lkdown_readed) {
-		ret = get_lockdown_info_for_nvt(ts->lockdown_info);
-		if (ret < 0)
-			NVT_ERR("can't get lockdown info");
+		/*
+		 * The mi-dsi panel provides the lockdown bytes that select the
+		 * right firmware variant, and it may not have probed yet: the
+		 * touch driver probes very early on this port.  Retry for up to
+		 * 20 s instead of latching zeros - zeros used to select the
+		 * wrong default firmware and leave the touchscreen dead.
+		 */
+		for (retry = 0; retry < 40; retry++) {
+			ret = get_lockdown_info_for_nvt(ts->lockdown_info);
+			if (ret >= 0 && !is_lockdown_empty(ts->lockdown_info))
+				break;
+			msleep(500);
+		}
+		if (ret < 0 || is_lockdown_empty(ts->lockdown_info))
+			NVT_ERR("can't get lockdown info after %d tries", retry);
 		NVT_LOG("Lockdown:0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x\n",
 			ts->lockdown_info[0], ts->lockdown_info[1], ts->lockdown_info[2], ts->lockdown_info[3],
 			ts->lockdown_info[4], ts->lockdown_info[5], ts->lockdown_info[6], ts->lockdown_info[7]);
