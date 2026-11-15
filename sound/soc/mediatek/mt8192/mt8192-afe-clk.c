@@ -676,3 +676,7 @@ int mt8192_init_clock(struct mtk_base_afe *afe)
 
 	return 0;
 }
+
+/* chopin: the MT6893 machine driver is built as a module and needs these. */
+EXPORT_SYMBOL_GPL(mt8192_mck_enable);
+EXPORT_SYMBOL_GPL(mt8192_mck_disable);
