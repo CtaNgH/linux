@@ -37,7 +37,7 @@ fi
 # string keeps their vermagic valid while we iterate on DT / driver fixes and
 # only replace Image.gz + dtb in the boot image.
 if test -n "$CHOPIN_LOCALVERSION"; then
-	echo "$CHOPIN_LOCALVERSION"
+	echo "${KERNELVERSION}$CHOPIN_LOCALVERSION"
 	exit 0
 fi
 
